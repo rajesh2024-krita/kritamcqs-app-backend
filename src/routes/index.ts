@@ -1,0 +1,46 @@
+import { Router, type IRouter } from "express";
+import healthRouter from "./health";
+import authRouter from "./auth";
+import usersRouter from "./users";
+import difficultiesRouter from "./difficulties";
+import subjectsRouter from "./subjects";
+import questionsRouter from "./questions";
+import questionFrameworkRouter from "./question-framework";
+import questionTypesRouter from "./question-types";
+import modesRouter from "./modes";
+import yearsRouter from "./years";
+import chaptersRouter from "./chapters";
+import dailySetRouter from "./daily-set";
+import dailyTestRouter from "./daily-test";
+import activityRouter from "./activity";
+import testsRouter from "./tests";
+import mockTestsRouter from "./mock-tests";
+import revisionRouter from "./revision";
+import subscriptionRouter from "./subscription";
+import adminRouter from "./admin";
+import adminAuthRouter from "./admin-auth";
+
+const router: IRouter = Router();
+
+router.use(healthRouter);
+router.use("/auth", authRouter);
+router.use("/users", usersRouter);
+router.use("/difficulties", difficultiesRouter);
+router.use("/modes", modesRouter);
+router.use("/years", yearsRouter);
+router.use("/chapters", chaptersRouter);
+router.use("/subjects", subjectsRouter);
+router.use("/question-framework", questionFrameworkRouter);
+router.use("/question-types", questionTypesRouter);
+router.use("/questions", questionsRouter);
+router.use("/daily-set", dailySetRouter);
+router.use(dailyTestRouter);
+router.use("/activity", activityRouter);
+router.use("/tests", testsRouter);
+router.use("/mock-tests", mockTestsRouter);
+router.use(revisionRouter);
+router.use("/subscription", subscriptionRouter);
+router.use("/admin-auth", adminAuthRouter);
+router.use("/admin", adminRouter);
+
+export default router;

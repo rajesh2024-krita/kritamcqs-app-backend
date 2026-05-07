@@ -1,0 +1,1136 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 0.1.0
+  description: KRITA NEET JEE API specification
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: auth
+    description: Authentication
+  - name: users
+    description: User profile and onboarding
+  - name: subjects
+    description: Subjects and chapters
+  - name: questions
+    description: Question management
+  - name: tests
+    description: Test engine
+  - name: mistakes
+    description: Mistake book
+  - name: revision
+    description: Revision engine
+  - name: subscription
+    description: Subscription and payment
+  - name: admin
+    description: Admin panel operations
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /auth/send-otp:
+    post:
+      operationId: sendOtp
+      tags: [auth]
+      summary: Send OTP to mobile number
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendOtpRequest"
+      responses:
+        "200":
+          description: OTP sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SendOtpResponse"
+        "400":
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/verify-otp:
+    post:
+      operationId: verifyOtp
+      tags: [auth]
+      summary: Verify OTP and get session token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyOtpRequest"
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid OTP
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Logout and invalidate session
+      responses:
+        "200":
+          description: Logged out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /users/me:
+    get:
+      operationId: getMe
+      tags: [users]
+      summary: Get current user profile
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /users/onboarding:
+    post:
+      operationId: completeOnboarding
+      tags: [users]
+      summary: Save onboarding preferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OnboardingRequest"
+      responses:
+        "200":
+          description: Onboarding complete
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /users/stats:
+    get:
+      operationId: getUserStats
+      tags: [users]
+      summary: Get user performance statistics
+      responses:
+        "200":
+          description: User stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserStats"
+
+  /subjects:
+    get:
+      operationId: getSubjects
+      tags: [subjects]
+      summary: Get subjects for the user's exam mode
+      parameters:
+        - name: mode
+          in: query
+          schema:
+            type: string
+            enum: [NEET, JEE, BOTH]
+      responses:
+        "200":
+          description: List of subjects
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Subject"
+
+  /subjects/{subjectId}/chapters:
+    get:
+      operationId: getChapters
+      tags: [subjects]
+      summary: Get chapters for a subject
+      parameters:
+        - name: subjectId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of chapters
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Chapter"
+
+  /questions:
+    get:
+      operationId: getQuestions
+      tags: [questions]
+      summary: Get questions with filters
+      parameters:
+        - name: subjectId
+          in: query
+          schema:
+            type: integer
+        - name: chapterId
+          in: query
+          schema:
+            type: integer
+        - name: difficulty
+          in: query
+          schema:
+            type: string
+            enum: [easy, medium, moderate, hard]
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: List of questions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Question"
+    post:
+      operationId: createQuestion
+      tags: [questions]
+      summary: Create a new question (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateQuestionRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Question"
+
+  /questions/{questionId}:
+    put:
+      operationId: updateQuestion
+      tags: [questions]
+      summary: Update a question (admin)
+      parameters:
+        - name: questionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateQuestionRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Question"
+    delete:
+      operationId: deleteQuestion
+      tags: [questions]
+      summary: Delete a question (admin)
+      parameters:
+        - name: questionId
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuccessResponse"
+
+  /tests/generate:
+    post:
+      operationId: generateTest
+      tags: [tests]
+      summary: Generate a smart adaptive test
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateTestRequest"
+      responses:
+        "200":
+          description: Test generated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Test"
+
+  /tests/{testId}/submit:
+    post:
+      operationId: submitTest
+      tags: [tests]
+      summary: Submit test answers and get results
+      parameters:
+        - name: testId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SubmitTestRequest"
+      responses:
+        "200":
+          description: Test results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TestResult"
+
+  /tests/history:
+    get:
+      operationId: getTestHistory
+      tags: [tests]
+      summary: Get test history
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: Test history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TestSummary"
+
+  /mistakes:
+    get:
+      operationId: getMistakes
+      tags: [mistakes]
+      summary: Get mistake book entries
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [new, improving, weak]
+        - name: subjectId
+          in: query
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Mistakes list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MistakeEntry"
+
+  /revision/today:
+    get:
+      operationId: getTodayRevision
+      tags: [revision]
+      summary: Get today's revision set
+      responses:
+        "200":
+          description: Revision questions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevisionSet"
+
+  /weak-areas:
+    get:
+      operationId: getWeakAreas
+      tags: [revision]
+      summary: Get identified weak areas
+      responses:
+        "200":
+          description: Weak areas
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WeakArea"
+
+  /subscription/plans:
+    get:
+      operationId: getSubscriptionPlans
+      tags: [subscription]
+      summary: Get available subscription plans
+      responses:
+        "200":
+          description: Plans
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SubscriptionPlan"
+
+  /subscription/create-order:
+    post:
+      operationId: createOrder
+      tags: [subscription]
+      summary: Create a Razorpay payment order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "200":
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderResponse"
+
+  /subscription/verify-payment:
+    post:
+      operationId: verifyPayment
+      tags: [subscription]
+      summary: Verify payment and activate subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/VerifyPaymentRequest"
+      responses:
+        "200":
+          description: Subscription activated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SubscriptionStatus"
+
+  /admin/stats:
+    get:
+      operationId: getAdminStats
+      tags: [admin]
+      summary: Get admin dashboard stats
+      responses:
+        "200":
+          description: Admin stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AdminStats"
+
+  /admin/users:
+    get:
+      operationId: getAdminUsers
+      tags: [admin]
+      summary: Get all users (admin)
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        "200":
+          description: Users list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedUsers"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+      required:
+        - error
+
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+      required:
+        - success
+
+    SendOtpRequest:
+      type: object
+      properties:
+        mobile:
+          type: string
+      required:
+        - mobile
+
+    SendOtpResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        expiresIn:
+          type: integer
+      required:
+        - success
+
+    VerifyOtpRequest:
+      type: object
+      properties:
+        mobile:
+          type: string
+        otp:
+          type: string
+          pattern: '^\d{6}$'
+          minLength: 6
+          maxLength: 6
+      required:
+        - mobile
+        - otp
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/User"
+        isNewUser:
+          type: boolean
+      required:
+        - token
+        - user
+        - isNewUser
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+        mobile:
+          type: string
+        name:
+          type: string
+        examMode:
+          type: string
+          enum: [NEET, JEE, BOTH]
+        level:
+          type: string
+          enum: [Beginner, Average, Topper]
+        onboardingComplete:
+          type: boolean
+        isPremium:
+          type: boolean
+        premiumExpiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        isAdmin:
+          type: boolean
+      required:
+        - id
+        - mobile
+        - onboardingComplete
+        - isPremium
+
+    OnboardingRequest:
+      type: object
+      properties:
+        examMode:
+          type: string
+          enum: [NEET, JEE, BOTH]
+        level:
+          type: string
+          enum: [Beginner, Average, Topper]
+        name:
+          type: string
+      required:
+        - examMode
+        - level
+
+    UserStats:
+      type: object
+      properties:
+        totalTests:
+          type: integer
+        avgAccuracy:
+          type: number
+        totalQuestions:
+          type: integer
+        correctAnswers:
+          type: integer
+        avgTimePerQuestion:
+          type: number
+        predictedScore:
+          type: number
+        currentStreak:
+          type: integer
+        weakTopicsCount:
+          type: integer
+        revisionPendingCount:
+          type: integer
+      required:
+        - totalTests
+        - avgAccuracy
+        - totalQuestions
+        - correctAnswers
+
+    Subject:
+      type: object
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        examMode:
+          type: string
+          enum: [NEET, JEE, BOTH]
+        icon:
+          type: string
+        color:
+          type: string
+        totalChapters:
+          type: integer
+        questionsCount:
+          type: integer
+      required:
+        - id
+        - name
+        - examMode
+
+    Chapter:
+      type: object
+      properties:
+        id:
+          type: integer
+        subjectId:
+          type: integer
+        name:
+          type: string
+        questionsCount:
+          type: integer
+        strength:
+          type: string
+          enum: [strong, medium, weak, untested]
+        accuracy:
+          type: number
+      required:
+        - id
+        - subjectId
+        - name
+
+    Question:
+      type: object
+      properties:
+        id:
+          type: integer
+        subjectId:
+          type: integer
+        chapterId:
+          type: integer
+        question:
+          type: string
+        optionA:
+          type: string
+        optionB:
+          type: string
+        optionC:
+          type: string
+        optionD:
+          type: string
+        correctOption:
+          type: string
+          enum: [A, B, C, D]
+        explanation:
+          type: string
+        difficulty:
+          type: string
+          enum: [easy, medium, moderate, hard]
+        examMode:
+          type: string
+          enum: [NEET, JEE, BOTH]
+        year:
+          type: integer
+      required:
+        - id
+        - subjectId
+        - chapterId
+        - question
+        - optionA
+        - optionB
+        - optionC
+        - optionD
+        - correctOption
+        - difficulty
+        - examMode
+
+    CreateQuestionRequest:
+      type: object
+      properties:
+        subjectId:
+          type: integer
+        chapterId:
+          type: integer
+        question:
+          type: string
+        optionA:
+          type: string
+        optionB:
+          type: string
+        optionC:
+          type: string
+        optionD:
+          type: string
+        correctOption:
+          type: string
+          enum: [A, B, C, D]
+        explanation:
+          type: string
+        difficulty:
+          type: string
+          enum: [easy, medium, moderate, hard]
+        examMode:
+          type: string
+          enum: [NEET, JEE, BOTH]
+      required:
+        - subjectId
+        - chapterId
+        - question
+        - optionA
+        - optionB
+        - optionC
+        - optionD
+        - correctOption
+        - difficulty
+        - examMode
+
+    GenerateTestRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [smart, practice, revision]
+        subjectIds:
+          type: array
+          items:
+            type: integer
+        chapterIds:
+          type: array
+          items:
+            type: integer
+        difficulty:
+          type: string
+          enum: [easy, medium, moderate, hard, mixed]
+        questionCount:
+          type: integer
+          default: 30
+        examPattern:
+          type: string
+          enum: [NEET, JEE, MIXED]
+      required:
+        - mode
+
+    Test:
+      type: object
+      properties:
+        id:
+          type: integer
+        questions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Question"
+        totalQuestions:
+          type: integer
+        timeLimit:
+          type: integer
+        mode:
+          type: string
+      required:
+        - id
+        - questions
+        - totalQuestions
+        - timeLimit
+        - mode
+
+    SubmitTestRequest:
+      type: object
+      properties:
+        answers:
+          type: array
+          items:
+            $ref: "#/components/schemas/QuestionAnswer"
+        timeTaken:
+          type: integer
+      required:
+        - answers
+        - timeTaken
+
+    QuestionAnswer:
+      type: object
+      properties:
+        questionId:
+          type: integer
+        selectedOption:
+          type: string
+          enum: [A, B, C, D]
+        timeSpent:
+          type: integer
+        skipped:
+          type: boolean
+      required:
+        - questionId
+
+    TestResult:
+      type: object
+      properties:
+        testId:
+          type: integer
+        score:
+          type: number
+        accuracy:
+          type: number
+        timeTaken:
+          type: integer
+        correctCount:
+          type: integer
+        incorrectCount:
+          type: integer
+        skippedCount:
+          type: integer
+        totalQuestions:
+          type: integer
+        topicBreakdown:
+          type: array
+          items:
+            $ref: "#/components/schemas/TopicScore"
+        weakAreasAdded:
+          type: array
+          items:
+            type: string
+        rank:
+          type: integer
+      required:
+        - testId
+        - score
+        - accuracy
+        - timeTaken
+        - correctCount
+        - incorrectCount
+        - skippedCount
+        - totalQuestions
+
+    TopicScore:
+      type: object
+      properties:
+        subject:
+          type: string
+        chapter:
+          type: string
+        correct:
+          type: integer
+        total:
+          type: integer
+        accuracy:
+          type: number
+      required:
+        - subject
+        - chapter
+        - correct
+        - total
+        - accuracy
+
+    TestSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+        date:
+          type: string
+          format: date-time
+        score:
+          type: number
+        accuracy:
+          type: number
+        totalQuestions:
+          type: integer
+        mode:
+          type: string
+        timeTaken:
+          type: integer
+      required:
+        - id
+        - date
+        - score
+        - accuracy
+        - totalQuestions
+        - mode
+
+    MistakeEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+        question:
+          $ref: "#/components/schemas/Question"
+        status:
+          type: string
+          enum: [new, improving, weak]
+        attempts:
+          type: integer
+        lastAttemptDate:
+          type: string
+          format: date-time
+        selectedOption:
+          type: string
+      required:
+        - id
+        - question
+        - status
+        - attempts
+
+    RevisionSet:
+      type: object
+      properties:
+        wrongQuestions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Question"
+        oldCorrectQuestions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Question"
+        totalCount:
+          type: integer
+      required:
+        - wrongQuestions
+        - oldCorrectQuestions
+        - totalCount
+
+    WeakArea:
+      type: object
+      properties:
+        id:
+          type: integer
+        subjectId:
+          type: integer
+        subjectName:
+          type: string
+        chapterId:
+          type: integer
+        chapterName:
+          type: string
+        accuracy:
+          type: number
+        attempts:
+          type: integer
+        lastPracticed:
+          type: string
+          format: date-time
+      required:
+        - id
+        - subjectId
+        - subjectName
+        - chapterId
+        - chapterName
+        - accuracy
+        - attempts
+
+    SubscriptionPlan:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        price:
+          type: integer
+        duration:
+          type: integer
+        durationUnit:
+          type: string
+        features:
+          type: array
+          items:
+            type: string
+        savings:
+          type: string
+      required:
+        - id
+        - name
+        - price
+        - duration
+        - durationUnit
+        - features
+
+    CreateOrderRequest:
+      type: object
+      properties:
+        planId:
+          type: string
+      required:
+        - planId
+
+    OrderResponse:
+      type: object
+      properties:
+        orderId:
+          type: string
+        amount:
+          type: integer
+        currency:
+          type: string
+        keyId:
+          type: string
+      required:
+        - orderId
+        - amount
+        - currency
+
+    VerifyPaymentRequest:
+      type: object
+      properties:
+        orderId:
+          type: string
+        paymentId:
+          type: string
+        signature:
+          type: string
+        planId:
+          type: string
+      required:
+        - orderId
+        - paymentId
+        - signature
+        - planId
+
+    SubscriptionStatus:
+      type: object
+      properties:
+        isPremium:
+          type: boolean
+        expiresAt:
+          type: string
+          format: date-time
+        plan:
+          type: string
+      required:
+        - isPremium
+
+    AdminStats:
+      type: object
+      properties:
+        totalUsers:
+          type: integer
+        premiumUsers:
+          type: integer
+        totalQuestions:
+          type: integer
+        totalTests:
+          type: integer
+        revenueThisMonth:
+          type: number
+        newUsersToday:
+          type: integer
+        testsToday:
+          type: integer
+      required:
+        - totalUsers
+        - premiumUsers
+        - totalQuestions
+        - totalTests
+
+    PaginatedUsers:
+      type: object
+      properties:
+        users:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+      required:
+        - users
+        - total
+        - page
+        - limit
