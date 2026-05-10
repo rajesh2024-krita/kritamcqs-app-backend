@@ -34,7 +34,7 @@ import type { AuthenticatedRequest } from "../middlewares/auth";
 import { requireAdmin } from "../middlewares/auth";
 import { resolveDifficultySelection } from "../lib/difficulties";
 import { getExamTypeLabel, normalizeQuestionDocument } from "../lib/question-framework";
-import { generateInvoiceForSubscription, getInvoiceSettings, getNotificationSettings, processExpiryReminders } from "../lib/invoices";
+import { generateInvoiceForSubscription, getActiveInvoiceTemplate, getInvoiceSettings, getNotificationSettings, processExpiryReminders, regenerateInvoicePdf, renderInvoicePdf } from "../lib/invoices";
 import { sendEmail } from "../lib/simple-email";
 
 const router = Router();
@@ -2057,8 +2057,7 @@ router.post("/invoice-settings", wrap(async (req, res) => {
   existing.footerText = String(body.footerText ?? existing.footerText ?? "");
   existing.productDetailsTitle = String(body.productDetailsTitle ?? existing.productDetailsTitle ?? "Product Details");
   existing.paidStampText = String(body.paidStampText ?? existing.paidStampText ?? "PAID");
-  if (Array.isArray(body.fields)) {
-    existing.fields = body.fields.map((field: any) => ({
+  const normalizeFields = (fields: any[] = []) => fields.map((field: any) => ({
       ...field,
       id: String(field.id ?? `field-${Date.now()}`),
       type: String(field.type ?? "text"),
@@ -2074,10 +2073,26 @@ router.post("/invoice-settings", wrap(async (req, res) => {
       opacity: Math.max(0, Math.min(1, Number(field.opacity ?? 1))),
       zIndex: Number(field.zIndex ?? 1),
       enabled: field.enabled !== false,
-    })) as any;
+    }));
+  if (Array.isArray(body.fields)) {
+    existing.fields = normalizeFields(body.fields) as any;
   }
   existing.page = body.page || existing.page || {};
-  existing.reusableBlocks = Array.isArray(body.reusableBlocks) ? body.reusableBlocks : existing.reusableBlocks;
+  if (Array.isArray(body.reusableBlocks)) {
+    const blocks = body.reusableBlocks.map((block: any) => ({
+      ...block,
+      id: String(block.id || `template-${Date.now()}-${Math.floor(Math.random() * 1000)}`),
+      name: String(block.name || "Invoice Template"),
+      type: String(block.type || "fabric-template"),
+      fields: Array.isArray(block.fields) ? normalizeFields(block.fields) : block.fields,
+    }));
+    const activeIndex = blocks.findIndex((block: any) => block.type === "fabric-template" && block.active);
+    existing.reusableBlocks = blocks.map((block: any, index: number) => block.type === "fabric-template" ? { ...block, active: activeIndex >= 0 ? index === activeIndex : index === 0 } : block) as any;
+    const active = getActiveInvoiceTemplate(existing);
+    existing.activeTemplateId = active?.id || "";
+    existing.activeTemplateName = active?.name || "";
+    if (Array.isArray(active?.fields) && active.fields.length) existing.fields = normalizeFields(active.fields) as any;
+  }
   existing.defaultTemplate = body.defaultTemplate === undefined ? existing.defaultTemplate : Boolean(body.defaultTemplate);
   existing.versions = [
     {
@@ -2115,6 +2130,57 @@ router.post("/invoice-settings/test-email", wrap(async (req, res) => {
   sendSuccess(res, result, { message: result.skipped ? "SMTP test skipped" : "SMTP test email sent" });
 }));
 
+router.post("/invoice-settings/test-invoice", wrap(async (req, res) => {
+  const settings = await getInvoiceSettings();
+  const to = String(req.body?.to || settings.companyEmail || settings.smtp?.fromEmail || "").trim();
+  if (!to) throw Object.assign(new Error("Test recipient email is required"), { statusCode: 400 });
+  const now = new Date();
+  const sampleInvoice = {
+    invoiceNumber: `TEST-${now.toISOString().slice(0, 10).replace(/-/g, "")}`,
+    userName: "Test Customer",
+    userEmail: to,
+    userMobile: "8000000001",
+    customerCompany: {
+      name: "Test Customer",
+      email: to,
+      phone: "8000000001",
+      address: "Sample billing address",
+    },
+    planId: "test-plan",
+    planName: "Premium Plan",
+    currency: "INR",
+    status: "paid",
+    invoiceDate: now,
+    dueDate: now,
+    transactionId: "test_txn_123456",
+    subtotal: 1000,
+    discountTotal: 100,
+    taxTotal: 162,
+    grandTotal: 1062,
+    amount: 1062,
+    notes: "This is a test invoice generated for template and email verification.",
+    terms: "No payment is required for this test invoice.",
+    items: [{
+      product: "Premium Subscription",
+      description: "Template test item",
+      quantity: 1,
+      price: 1000,
+      discount: 100,
+      tax: 18,
+      total: 1062,
+    }],
+  };
+  const pdf = await renderInvoicePdf(sampleInvoice, settings, { planName: "Premium Plan" });
+  const result = await sendEmail({
+    smtp: settings.smtp || {},
+    to,
+    subject: `Test Invoice from ${settings.companyName}`,
+    text: `Hi,\n\nThis is a test invoice from ${settings.companyName}. Please check the attached PDF layout and email delivery.\n\nNo payment is required.`,
+    attachments: [{ filename: `${sampleInvoice.invoiceNumber}.pdf`, contentType: "application/pdf", content: pdf }],
+  });
+  sendSuccess(res, result, { message: result.skipped ? "Test invoice email skipped" : "Test invoice email sent" });
+}));
+
 function calculateInvoiceTotals(items: any[] = []) {
   return items.reduce(
     (acc, item) => {
@@ -2141,6 +2207,17 @@ function calculateInvoiceTotals(items: any[] = []) {
 function normalizeInvoicePayload(body: Record<string, any>, existing: any = {}) {
   const totals = calculateInvoiceTotals(Array.isArray(body.items) ? body.items : existing.items || []);
   const now = new Date();
+  const allowedStatuses = new Set(["draft", "sent", "paid", "pending", "overdue", "cancelled", "void", "failed"]);
+  const nextStatus = String(body.status || existing.status || "draft").toLowerCase();
+  const paymentHistory = Array.isArray(body.paymentHistory)
+    ? body.paymentHistory.map((item: any) => ({
+      status: String(item.status || body.status || "pending").toLowerCase(),
+      amount: Number(item.amount || 0),
+      transactionId: String(item.transactionId || ""),
+      paidAt: item.paidAt ? new Date(String(item.paidAt)) : new Date(),
+      note: String(item.note || ""),
+    }))
+    : existing.paymentHistory || [];
   return {
     invoiceNumber: String(body.invoiceNumber || existing.invoiceNumber || `INV-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${String(Date.now()).slice(-6)}`).trim(),
     userId: String(body.userId || existing.userId || "manual"),
@@ -2151,7 +2228,7 @@ function normalizeInvoicePayload(body: Record<string, any>, existing: any = {}) 
     userMobile: String(body.userMobile || body.customerCompany?.phone || existing.userMobile || ""),
     amount: Number(totals.grandTotal || body.amount || existing.amount || 0),
     currency: String(body.currency || existing.currency || "INR"),
-    status: String(body.status || existing.status || "draft"),
+    status: allowedStatuses.has(nextStatus) ? nextStatus : "draft",
     transactionId: String(body.transactionId || existing.transactionId || ""),
     invoiceDate: body.invoiceDate ? new Date(String(body.invoiceDate)) : existing.invoiceDate || now,
     dueDate: body.dueDate ? new Date(String(body.dueDate)) : existing.dueDate,
@@ -2169,14 +2246,25 @@ function normalizeInvoicePayload(body: Record<string, any>, existing: any = {}) 
     logoUrl: String(body.logoUrl || existing.logoUrl || ""),
     qrCode: String(body.qrCode || existing.qrCode || ""),
     templateId: String(body.templateId || existing.templateId || ""),
+    templateName: String(body.templateName || existing.templateName || ""),
     shareToken: String(body.shareToken || existing.shareToken || crypto.randomBytes(12).toString("hex")),
+    paymentHistory,
   };
 }
 
 router.get("/invoices", wrap(async (req, res) => {
   const query = req.query as Record<string, unknown>;
   const { page, limit, skip } = getPagination(query);
-  const filters = { ...exactFilter(query, ["status", "emailStatus"]), ...buildSearchFilter(query, ["invoiceNumber", "userName", "userEmail", "planId"]) };
+  const filters: Record<string, any> = { ...exactFilter(query, ["status", "emailStatus", "templateId"]), ...buildSearchFilter(query, ["invoiceNumber", "userName", "userEmail", "planId", "transactionId"]) };
+  if (query.dateFrom || query.dateTo) {
+    filters.createdAt = {};
+    if (query.dateFrom) filters.createdAt.$gte = new Date(String(query.dateFrom));
+    if (query.dateTo) {
+      const end = new Date(String(query.dateTo));
+      end.setHours(23, 59, 59, 999);
+      filters.createdAt.$lte = end;
+    }
+  }
   const [items, total] = await Promise.all([
     Invoice.find(filters).sort({ createdAt: -1 }).skip(skip).limit(limit),
     Invoice.countDocuments(filters),
@@ -2184,14 +2272,29 @@ router.get("/invoices", wrap(async (req, res) => {
   sendSuccess(res, items.map((item: any) => item.toJSON()), { meta: { total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) } });
 }));
 
+router.get("/invoices/:id", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "invoice");
+  const invoice = await Invoice.findById(req.params.id);
+  if (!invoice) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+  sendSuccess(res, invoice.toJSON());
+}));
+
 router.post("/invoices", wrap(async (req, res) => {
-  const payload = normalizeInvoicePayload(req.body ?? {});
+  const settings = await getInvoiceSettings();
+  const active = getActiveInvoiceTemplate(settings);
+  const payload = normalizeInvoicePayload({
+    ...(req.body ?? {}),
+    templateId: req.body?.templateId || active?.id || settings.activeTemplateId || "",
+    templateName: req.body?.templateName || active?.name || settings.activeTemplateName || "",
+  });
   const invoice = await Invoice.create({
     ...payload,
     emailStatus: "pending",
     issuedAt: payload.invoiceDate || new Date(),
     activityLogs: [{ action: "created", message: "Manual invoice created", at: new Date() }],
   });
+  await regenerateInvoicePdf(invoice, settings);
+  await invoice.save();
   sendSuccess(res, invoice.toJSON(), { status: 201, message: "Invoice created" });
 }));
 
@@ -2201,6 +2304,7 @@ router.put("/invoices/:id", wrap(async (req, res) => {
   if (!invoice) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
   Object.assign(invoice, normalizeInvoicePayload(req.body ?? {}, invoice.toJSON()));
   invoice.activityLogs = [...(invoice.activityLogs || []), { action: "updated", message: "Invoice edited", at: new Date() }] as any;
+  await regenerateInvoicePdf(invoice);
   await invoice.save();
   sendSuccess(res, invoice.toJSON(), { message: "Invoice updated" });
 }));
@@ -2228,11 +2332,13 @@ router.post("/invoices/:id/send", wrap(async (req, res) => {
   if (!invoice) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
   const settings = await getInvoiceSettings();
   if (!invoice.userEmail) throw Object.assign(new Error("Invoice customer email is missing"), { statusCode: 400 });
+  const pdf = await regenerateInvoicePdf(invoice, settings);
   const result = await sendEmail({
     smtp: settings.smtp || {},
     to: invoice.userEmail,
     subject: String(req.body?.subject || `Invoice ${invoice.invoiceNumber} from ${settings.companyName}`),
     text: String(req.body?.body || `Hi ${invoice.userName || "Customer"},\n\nYour invoice ${invoice.invoiceNumber} amount is ${invoice.currency} ${invoice.amount}.\nPayment status: ${invoice.status}.\nTransaction ID: ${invoice.transactionId || "-"}.\n\n${settings.companyName}`),
+    attachments: [{ filename: `${invoice.invoiceNumber}.pdf`, contentType: "application/pdf", content: pdf }],
   });
   invoice.emailStatus = result.skipped ? "skipped" : "sent";
   invoice.status = invoice.status === "draft" ? "sent" : invoice.status;
@@ -2241,6 +2347,17 @@ router.post("/invoices/:id/send", wrap(async (req, res) => {
   invoice.activityLogs = [...(invoice.activityLogs || []), { action: "email", message: result.skipped ? "Email skipped" : "Invoice email sent", at: new Date() }] as any;
   await invoice.save();
   sendSuccess(res, invoice.toJSON(), { message: result.skipped ? "Invoice email skipped" : "Invoice email sent" });
+}));
+
+router.get("/invoices/:id/pdf", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "invoice");
+  const invoice = await Invoice.findById(req.params.id);
+  if (!invoice) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+  const pdf = await regenerateInvoicePdf(invoice);
+  await invoice.save();
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${invoice.invoiceNumber}.pdf"`);
+  res.send(pdf);
 }));
 
 router.delete("/invoices/:id", wrap(async (req, res) => {

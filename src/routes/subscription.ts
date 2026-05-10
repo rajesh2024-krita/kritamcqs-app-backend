@@ -1,9 +1,10 @@
 import { Router, type IRouter } from "express";
 import crypto from "crypto";
-import { Coupon, PaymentGatewaySettings, Subscription, SubscriptionPlan, User } from "@api/db";
+import mongoose from "mongoose";
+import { Coupon, Invoice, PaymentGatewaySettings, Subscription, SubscriptionPlan, User } from "@api/db";
 import { CreateOrderBody, VerifyPaymentBody } from "@api/zod";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
-import { generateInvoiceForSubscription } from "../lib/invoices";
+import { generateInvoiceForSubscription, regenerateInvoicePdf } from "../lib/invoices";
 
 const router: IRouter = Router();
 
@@ -203,8 +204,8 @@ async function resolveCoupon(plan: any, couponCode?: string) {
 }
 
 router.get("/plans", async (_req, res) => {
-  const plans = await SubscriptionPlan.find({ active: true }).sort({ sortOrder: 1, createdAt: 1 });
-  res.json(plans.map(mapPlan));
+  const plan = await SubscriptionPlan.findOne({ active: true }).sort({ sortOrder: 1, createdAt: 1 });
+  res.json(plan ? [mapPlan(plan)] : []);
 });
 
 router.post("/apply-coupon", requireAuth, async (req: AuthenticatedRequest, res) => {
@@ -239,6 +240,62 @@ router.get("/history", requireAuth, async (req: AuthenticatedRequest, res) => {
       planName: planMap.get(String(item.planId))?.name ?? item.planId,
     })),
   });
+});
+
+function mapInvoice(invoice: any) {
+  const raw = invoice.toJSON?.() || invoice;
+  return {
+    id: String(raw.id || raw._id),
+    invoiceNumber: raw.invoiceNumber,
+    planId: raw.planId,
+    planName: raw.items?.[0]?.product || raw.planId,
+    amount: raw.grandTotal ?? raw.amount,
+    currency: raw.currency || "INR",
+    status: raw.status,
+    emailStatus: raw.emailStatus,
+    invoiceDate: raw.invoiceDate || raw.issuedAt || raw.createdAt,
+    dueDate: raw.dueDate,
+    transactionId: raw.transactionId,
+    templateName: raw.templateName,
+    pdfPath: raw.pdfPath,
+    paymentHistory: raw.paymentHistory || [],
+    items: raw.items || [],
+  };
+}
+
+router.get("/invoices", requireAuth, async (req: AuthenticatedRequest, res) => {
+  const invoices = await Invoice.find({ userId: req.userId }).sort({ invoiceDate: -1, createdAt: -1 }).lean();
+  res.json({ invoices: invoices.map(mapInvoice) });
+});
+
+router.get("/invoices/:id", requireAuth, async (req: AuthenticatedRequest, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    res.status(400).json({ error: "invalid_invoice", message: "Invalid invoice id" });
+    return;
+  }
+  const invoice = await Invoice.findOne({ _id: req.params.id, userId: req.userId });
+  if (!invoice) {
+    res.status(404).json({ error: "not_found", message: "Invoice not found" });
+    return;
+  }
+  res.json(mapInvoice(invoice));
+});
+
+router.get("/invoices/:id/pdf", requireAuth, async (req: AuthenticatedRequest, res) => {
+  if (!mongoose.isValidObjectId(req.params.id)) {
+    res.status(400).json({ error: "invalid_invoice", message: "Invalid invoice id" });
+    return;
+  }
+  const invoice = await Invoice.findOne({ _id: req.params.id, userId: req.userId });
+  if (!invoice) {
+    res.status(404).json({ error: "not_found", message: "Invoice not found" });
+    return;
+  }
+  const pdf = await regenerateInvoicePdf(invoice);
+  await invoice.save();
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `inline; filename="${invoice.invoiceNumber}.pdf"`);
+  res.send(pdf);
 });
 
 router.post("/create-order", requireAuth, async (req: AuthenticatedRequest, res) => {

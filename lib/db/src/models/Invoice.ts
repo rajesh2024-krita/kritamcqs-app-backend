@@ -11,7 +11,7 @@ export interface IInvoice extends Document {
   userMobile?: string;
   amount: number;
   currency: string;
-  status: "draft" | "sent" | "paid" | "pending" | "cancelled" | "void" | "failed";
+  status: "draft" | "sent" | "paid" | "pending" | "overdue" | "cancelled" | "void" | "failed";
   transactionId?: string;
   invoiceDate?: Date;
   dueDate?: Date;
@@ -29,8 +29,10 @@ export interface IInvoice extends Document {
   logoUrl?: string;
   qrCode?: string;
   templateId?: string;
+  templateName?: string;
   shareToken?: string;
   activityLogs?: Array<Record<string, unknown>>;
+  paymentHistory?: Array<Record<string, unknown>>;
   pdfPath?: string;
   emailStatus: "pending" | "sent" | "skipped" | "failed";
   emailError?: string;
@@ -51,7 +53,7 @@ const invoiceSchema = new Schema<IInvoice>(
     userMobile: String,
     amount: { type: Number, required: true },
     currency: { type: String, default: "INR" },
-    status: { type: String, enum: ["draft", "sent", "paid", "pending", "cancelled", "void", "failed"], default: "draft", index: true },
+    status: { type: String, enum: ["draft", "sent", "paid", "pending", "overdue", "cancelled", "void", "failed"], default: "draft", index: true },
     transactionId: String,
     invoiceDate: Date,
     dueDate: Date,
@@ -69,8 +71,10 @@ const invoiceSchema = new Schema<IInvoice>(
     logoUrl: String,
     qrCode: String,
     templateId: String,
+    templateName: String,
     shareToken: { type: String, index: true },
     activityLogs: { type: [Schema.Types.Mixed], default: [] },
+    paymentHistory: { type: [Schema.Types.Mixed], default: [] },
     pdfPath: String,
     emailStatus: { type: String, enum: ["pending", "sent", "skipped", "failed"], default: "pending" },
     emailError: String,

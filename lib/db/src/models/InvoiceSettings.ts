@@ -15,6 +15,8 @@ export interface IInvoiceSettings extends Document {
   productDetailsTitle: string;
   paidStampText: string;
   fields: Array<{ id: string; label: string; x: number; y: number; size: number; enabled: boolean }>;
+  activeTemplateId?: string;
+  activeTemplateName?: string;
   smtp: {
     host?: string;
     port?: number;
@@ -31,7 +33,7 @@ export interface IInvoiceSettings extends Document {
 const fieldSchema = new Schema(
   {
     id: { type: String, required: true },
-    type: { type: String, enum: ["text", "image"], default: "text" },
+    type: { type: String, default: "text" },
     label: { type: String, default: "" },
     content: { type: String, default: "" },
     src: { type: String, default: "" },
@@ -68,6 +70,8 @@ const invoiceSettingsSchema = new Schema<IInvoiceSettings>(
     productDetailsTitle: { type: String, default: "Product Details" },
     paidStampText: { type: String, default: "PAID" },
     fields: { type: [fieldSchema], default: [] },
+    activeTemplateId: { type: String, default: "" },
+    activeTemplateName: { type: String, default: "" },
     page: { type: Schema.Types.Mixed, default: { size: "A4", orientation: "portrait", margin: 32, snapToGrid: true, gridSize: 10 } },
     reusableBlocks: { type: [Schema.Types.Mixed], default: [] },
     versions: { type: [Schema.Types.Mixed], default: [] },
