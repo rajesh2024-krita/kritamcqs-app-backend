@@ -9,6 +9,7 @@ import {
   Question,
   QuestionAttempt,
   RevisionHistory,
+  RevisionSettings,
   SessionAttempt,
   Subject,
 } from "@api/db";
@@ -20,6 +21,12 @@ import { normalizeQuestionDocument } from "../lib/question-framework";
 import { getQuestionExamModes } from "../lib/subjects";
 
 const router: IRouter = Router();
+
+const DEFAULT_REVISION_CONFIG = {
+  wrongQuestionLimit: 10,
+  oldQuestionLimit: 5,
+  revisionEnabled: true,
+};
 
 const SubmitRevisionBody = z.object({
   sessionId: z.string().min(1),
@@ -36,13 +43,36 @@ const SubmitRevisionBody = z.object({
   timeTaken: z.number(),
 });
 
+async function getRevisionConfig() {
+  const settings = await RevisionSettings.findOne({});
+  if (!settings) return DEFAULT_REVISION_CONFIG;
+
+  return {
+    wrongQuestionLimit: Math.max(1, Number(settings.wrongQuestionLimit ?? DEFAULT_REVISION_CONFIG.wrongQuestionLimit)),
+    oldQuestionLimit: Math.max(1, Number(settings.oldQuestionLimit ?? DEFAULT_REVISION_CONFIG.oldQuestionLimit)),
+    revisionEnabled: settings.revisionEnabled !== false,
+  };
+}
+
 async function buildRevisionSet(userId: string, examPattern: "NEET" | "JEE" | "BOTH" = "NEET") {
+  const config = await getRevisionConfig();
+  if (!config.revisionEnabled) {
+    return {
+      wrongQuestions: [],
+      oldCorrectQuestions: [],
+      questions: [],
+      totalCount: 0,
+      enabled: false,
+      config,
+    };
+  }
+
   const examModes = getQuestionExamModes(examPattern);
   const allowedModes = new Set(examModes);
 
   const mistakeEntries = await Mistake.find({ userId })
     .sort({ attempts: -1, lastAttemptDate: 1 })
-    .limit(10);
+    .limit(config.wrongQuestionLimit);
 
   const wrongQuestionIds = mistakeEntries.map((item) => String(item.questionId)).filter(Boolean);
   const wrongQuestionsRaw = wrongQuestionIds.length
@@ -66,7 +96,7 @@ async function buildRevisionSet(userId: string, examPattern: "NEET" | "JEE" | "B
     if (!questionId || seenOld.has(questionId)) continue;
     seenOld.add(questionId);
     oldCorrectQuestionIds.push(questionId);
-    if (oldCorrectQuestionIds.length >= 5) break;
+    if (oldCorrectQuestionIds.length >= config.oldQuestionLimit) break;
   }
 
   const oldCorrectRaw = oldCorrectQuestionIds.length
@@ -83,13 +113,16 @@ async function buildRevisionSet(userId: string, examPattern: "NEET" | "JEE" | "B
     deduped.set(String(question._id ?? question.id), question);
   });
 
-  const questions = [...deduped.values()].slice(0, 15);
+  const totalRevisionLimit = config.wrongQuestionLimit + config.oldQuestionLimit;
+  const questions = [...deduped.values()].slice(0, totalRevisionLimit);
 
   return {
     wrongQuestions,
     oldCorrectQuestions,
     questions,
     totalCount: questions.length,
+    enabled: true,
+    config,
   };
 }
 
@@ -123,6 +156,23 @@ router.get("/revision", requireAuth, requireOnboardingComplete, async (req: Auth
   const examMode = (user.examMode ?? "NEET") as "NEET" | "JEE" | "BOTH";
 
   const revisionSet = await buildRevisionSet(userId, examMode);
+  if (!revisionSet.enabled) {
+    res.json({
+      sessionId: null,
+      wrongQuestions: [],
+      oldQuestions: [],
+      questions: [],
+      wrongCount: 0,
+      oldCount: 0,
+      totalCount: 0,
+      configuredTotalCount: 0,
+      timeLimit: 0,
+      status: "disabled",
+      message: "Revision module is disabled by admin",
+    });
+    return;
+  }
+
   if (revisionSet.questions.length === 0) {
     res.json({
       sessionId: null,
@@ -132,6 +182,7 @@ router.get("/revision", requireAuth, requireOnboardingComplete, async (req: Auth
       wrongCount: 0,
       oldCount: 0,
       totalCount: 0,
+      configuredTotalCount: revisionSet.config.wrongQuestionLimit + revisionSet.config.oldQuestionLimit,
       timeLimit: 0,
       status: "empty",
       message: "No Revision Pending",
@@ -158,6 +209,7 @@ router.get("/revision", requireAuth, requireOnboardingComplete, async (req: Auth
     wrongCount: revisionSet.wrongQuestions.length,
     oldCount: revisionSet.oldCorrectQuestions.length,
     totalCount: revisionSet.totalCount,
+    configuredTotalCount: revisionSet.config.wrongQuestionLimit + revisionSet.config.oldQuestionLimit,
     timeLimit: revisionSet.totalCount * 90,
     status: "ready",
   });
@@ -416,6 +468,8 @@ router.get("/revision/today", requireAuth, requireOnboardingComplete, async (req
     wrongQuestions: revisionSet.wrongQuestions.map((question: any) => normalizeQuestionDocument(question)),
     oldCorrectQuestions: revisionSet.oldCorrectQuestions.map((question: any) => normalizeQuestionDocument(question)),
     totalCount: revisionSet.totalCount,
+    configuredTotalCount: revisionSet.config.wrongQuestionLimit + revisionSet.config.oldQuestionLimit,
+    enabled: revisionSet.enabled,
   });
 });
 

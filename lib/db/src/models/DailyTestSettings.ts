@@ -73,7 +73,7 @@ const DailyTestSettingsSchema = new Schema<IDailyTestSettings>(
   },
   {
     timestamps: true,
-    collection: "DailyTestSettings",
+    collection: "dailytestsettings",
     toJSON: {
       virtuals: true,
       transform: (_doc, ret) => {

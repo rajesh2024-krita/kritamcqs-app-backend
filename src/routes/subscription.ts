@@ -1,7 +1,9 @@
 import { Router, type IRouter } from "express";
-import { Coupon, Subscription, SubscriptionPlan, User } from "@api/db";
+import crypto from "crypto";
+import { Coupon, PaymentGatewaySettings, Subscription, SubscriptionPlan, User } from "@api/db";
 import { CreateOrderBody, VerifyPaymentBody } from "@api/zod";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
+import { generateInvoiceForSubscription } from "../lib/invoices";
 
 const router: IRouter = Router();
 
@@ -31,6 +33,120 @@ async function getSubscriptionPlan(planId: string) {
     throw new Error("Plan not found");
   }
   return plan;
+}
+
+async function getRazorpaySettings() {
+  const settings = await PaymentGatewaySettings.findOne({ provider: "razorpay" });
+  const keyId = settings?.razorpayKeyId || process.env["RAZORPAY_KEY_ID"] || "";
+  const keySecret = settings?.razorpayKeySecret || process.env["RAZORPAY_KEY_SECRET"] || "";
+  const enabled = settings ? settings.enabled !== false && settings.connectionStatus === "connected" : Boolean(keyId && keySecret);
+
+  if (!enabled || !keyId || !keySecret) {
+    throw new Error("Razorpay is not configured. Please configure Razorpay in the admin panel.");
+  }
+
+  return { keyId, keySecret };
+}
+
+function razorpayAuthHeader(keyId: string, keySecret: string) {
+  return `Basic ${Buffer.from(`${keyId}:${keySecret}`).toString("base64")}`;
+}
+
+async function createRazorpayOrder({
+  keyId,
+  keySecret,
+  amount,
+  receipt,
+  notes,
+}: {
+  keyId: string;
+  keySecret: string;
+  amount: number;
+  receipt: string;
+  notes: Record<string, string>;
+}) {
+  const response = await fetch("https://api.razorpay.com/v1/orders", {
+    method: "POST",
+    headers: {
+      Authorization: razorpayAuthHeader(keyId, keySecret),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      amount,
+      currency: "INR",
+      receipt: receipt.slice(0, 40),
+      notes,
+    }),
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(payload?.error?.description || payload?.error?.reason || "Razorpay order creation failed");
+  }
+  return payload;
+}
+
+function verifyRazorpaySignature(orderId: string, paymentId: string, signature: string, keySecret: string) {
+  const expected = crypto
+    .createHmac("sha256", keySecret)
+    .update(`${orderId}|${paymentId}`)
+    .digest("hex");
+
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(String(signature || ""));
+  return expectedBuffer.length === actualBuffer.length && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+async function fetchRazorpayPayment(keyId: string, keySecret: string, paymentId: string) {
+  const response = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}`, {
+    method: "GET",
+    headers: {
+      Authorization: razorpayAuthHeader(keyId, keySecret),
+      "Content-Type": "application/json",
+    },
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(payload?.error?.description || payload?.error?.reason || "Unable to verify Razorpay payment status");
+  }
+  return payload;
+}
+
+async function fetchRazorpayOrder(keyId: string, keySecret: string, orderId: string) {
+  const response = await fetch(`https://api.razorpay.com/v1/orders/${encodeURIComponent(orderId)}`, {
+    method: "GET",
+    headers: {
+      Authorization: razorpayAuthHeader(keyId, keySecret),
+      "Content-Type": "application/json",
+    },
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(payload?.error?.description || payload?.error?.reason || "Unable to verify Razorpay order amount");
+  }
+  return payload;
+}
+
+async function captureRazorpayPayment(keyId: string, keySecret: string, paymentId: string, amount: number) {
+  const response = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}/capture`, {
+    method: "POST",
+    headers: {
+      Authorization: razorpayAuthHeader(keyId, keySecret),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      amount,
+      currency: "INR",
+    }),
+  });
+
+  const payload = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(payload?.error?.description || payload?.error?.reason || "Unable to capture Razorpay payment");
+  }
+  return payload;
 }
 
 async function resolveCoupon(plan: any, couponCode?: string) {
@@ -130,12 +246,45 @@ router.post("/create-order", requireAuth, async (req: AuthenticatedRequest, res)
     const body = CreateOrderBody.parse(req.body);
     const plan = await getSubscriptionPlan(body.planId);
     const { pricing } = await resolveCoupon(plan, body.couponCode);
-    const orderId = `order_${Date.now()}_${req.userId}`;
+    const amountInPaise = Math.round(Number(pricing.finalAmount || 0) * 100);
+    if (amountInPaise < 100) {
+      throw new Error("Razorpay payment amount must be at least Rs. 1");
+    }
+
+    const gateway = await getRazorpaySettings();
+    const order = await createRazorpayOrder({
+      ...gateway,
+      amount: amountInPaise,
+      receipt: `sub_${Date.now()}_${req.userId}`,
+      notes: {
+        userId: String(req.userId),
+        planId: String(body.planId),
+        couponCode: String(body.couponCode || ""),
+      },
+    });
+
+    await Subscription.findOneAndUpdate(
+      { userId: req.userId, razorpayOrderId: order.id, status: "pending" },
+      {
+        userId: req.userId,
+        planId: body.planId,
+        razorpayOrderId: order.id,
+        couponCode: pricing.coupon?.code,
+        couponType: pricing.coupon?.type,
+        couponValue: pricing.coupon?.value,
+        baseAmount: pricing.baseAmount,
+        discountAmount: pricing.discountAmount,
+        amount: pricing.finalAmount,
+        status: "pending",
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+
     res.json({
-      orderId,
-      amount: pricing.finalAmount * 100,
-      currency: "INR",
-      keyId: process.env["RAZORPAY_KEY_ID"] ?? "rzp_test_demo",
+      orderId: order.id,
+      amount: Number(order.amount ?? amountInPaise),
+      currency: order.currency ?? "INR",
+      keyId: gateway.keyId,
       pricing,
       plan: mapPlan(plan),
     });
@@ -151,25 +300,93 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
   try {
     const body = VerifyPaymentBody.parse(req.body);
     const plan = await getSubscriptionPlan(body.planId);
-    const { coupon, pricing } = await resolveCoupon(plan, body.couponCode);
+    const gateway = await getRazorpaySettings();
+    const pendingSubscription = await Subscription.findOne({
+      userId: req.userId,
+      razorpayOrderId: body.orderId,
+      planId: body.planId,
+      status: "pending",
+    });
+
+    if (!pendingSubscription) {
+      throw new Error("Matching pending Razorpay order was not found");
+    }
+
+    const { coupon, pricing } = await resolveCoupon(plan, pendingSubscription.couponCode || body.couponCode);
+
+    if (!verifyRazorpaySignature(body.orderId, body.paymentId, body.signature, gateway.keySecret)) {
+      pendingSubscription.status = "failed";
+      pendingSubscription.razorpayPaymentId = body.paymentId;
+      await pendingSubscription.save();
+      throw new Error("Razorpay payment signature verification failed");
+    }
+
+    const razorpayOrder = await fetchRazorpayOrder(gateway.keyId, gateway.keySecret, body.orderId);
+    const expectedAmount = Number(razorpayOrder.amount || 0);
+    if (!Number.isFinite(expectedAmount) || expectedAmount <= 0) {
+      throw new Error("Unable to verify Razorpay order amount");
+    }
+
+    let payment = await fetchRazorpayPayment(gateway.keyId, gateway.keySecret, body.paymentId);
+    let paidAmount = Number(payment.amount || 0);
+
+    if (String(payment.order_id || "") !== String(body.orderId)) {
+      pendingSubscription.status = "failed";
+      pendingSubscription.razorpayPaymentId = body.paymentId;
+      await pendingSubscription.save();
+      throw new Error("Razorpay payment does not belong to this order");
+    }
+
+    if (!Number.isFinite(paidAmount) || paidAmount <= 0) {
+      pendingSubscription.status = "failed";
+      pendingSubscription.razorpayPaymentId = body.paymentId;
+      await pendingSubscription.save();
+      throw new Error("Unable to verify Razorpay payment amount");
+    }
+
+    if (paidAmount < expectedAmount) {
+      pendingSubscription.status = "failed";
+      pendingSubscription.razorpayPaymentId = body.paymentId;
+      await pendingSubscription.save();
+      throw new Error(`Razorpay payment amount is less than this order. Paid ${paidAmount}, expected ${expectedAmount}`);
+    }
+
+    if (String(payment.status || "").toLowerCase() === "authorized") {
+      payment = await captureRazorpayPayment(gateway.keyId, gateway.keySecret, body.paymentId, paidAmount);
+      paidAmount = Number(payment.amount || paidAmount);
+    }
+
+    if (String(payment.status || "").toLowerCase() !== "captured") {
+      pendingSubscription.status = "failed";
+      pendingSubscription.razorpayPaymentId = body.paymentId;
+      await pendingSubscription.save();
+      throw new Error(`Razorpay payment is not captured. Current status: ${payment.status || "unknown"}`);
+    }
+
+    if (paidAmount < expectedAmount) {
+      pendingSubscription.status = "failed";
+      pendingSubscription.razorpayPaymentId = body.paymentId;
+      await pendingSubscription.save();
+      throw new Error(`Razorpay payment amount is less than this order. Paid ${paidAmount}, expected ${expectedAmount}`);
+    }
+
     const expiresAt = new Date();
     expiresAt.setMonth(expiresAt.getMonth() + Number(plan.durationMonths || 0));
 
-    await new Subscription({
-      userId: req.userId,
-      planId: body.planId,
-      razorpayOrderId: body.orderId,
-      razorpayPaymentId: body.paymentId,
-      couponCode: coupon?.code,
-      couponType: coupon?.type,
-      couponValue: coupon?.value,
-      baseAmount: pricing.baseAmount,
-      discountAmount: pricing.discountAmount,
-      amount: pricing.finalAmount,
-      status: "active",
-      startDate: new Date(),
-      endDate: expiresAt,
-    }).save();
+    pendingSubscription.razorpayPaymentId = body.paymentId;
+    pendingSubscription.couponCode = coupon?.code;
+    pendingSubscription.couponType = coupon?.type;
+    pendingSubscription.couponValue = coupon?.value;
+    pendingSubscription.baseAmount = pricing.baseAmount;
+    pendingSubscription.discountAmount = pricing.discountAmount;
+    pendingSubscription.amount = expectedAmount / 100;
+    pendingSubscription.status = "active";
+    pendingSubscription.startDate = new Date();
+    pendingSubscription.endDate = expiresAt;
+    await pendingSubscription.save();
+    generateInvoiceForSubscription(String(pendingSubscription._id)).catch((err) =>
+      req.log.error({ err }, "Automatic invoice generation failed"),
+    );
 
     if (coupon) {
       coupon.usedCount = Number(coupon.usedCount || 0) + 1;
@@ -180,8 +397,8 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
 
     res.json({ isPremium: true, expiresAt: expiresAt.toISOString(), plan: plan.name, pricing });
   } catch (error) {
-    req.log.error({ error }, "Verify payment failed");
     const message = error instanceof Error ? error.message : "Payment verification failed";
+    req.log.error({ err: error, message }, "Verify payment failed");
     const status = /coupon|plan/i.test(message) ? 400 : 500;
     res.status(status).json({ error: "verify_failed", message });
   }

@@ -6,8 +6,9 @@ export interface IUser extends Document {
   email?: string;
   passwordHash?: string;
   name?: string;
-  examMode?: "NEET" | "JEE" | "BOTH";
-  level?: "Beginner" | "Average" | "Topper";
+  address?: string;
+  examMode?: string;
+  level?: string;
   onboardingComplete: boolean;
   mobileVerified: boolean;
   isPremium: boolean;
@@ -24,8 +25,9 @@ const UserSchema = new Schema<IUser>(
     email: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
     passwordHash: String,
     name: String,
-    examMode: { type: String, enum: ["NEET", "JEE", "BOTH"] },
-    level: { type: String, enum: ["Beginner", "Average", "Topper"] },
+    address: { type: String, default: "" },
+    examMode: { type: String, trim: true },
+    level: { type: String, trim: true },
     onboardingComplete: { type: Boolean, default: false },
     mobileVerified: { type: Boolean, default: false },
     isPremium: { type: Boolean, default: false },

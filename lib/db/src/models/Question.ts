@@ -20,7 +20,7 @@ export interface IQuestion extends Document {
   correctOption?: "A" | "B" | "C" | "D";
   explanation?: string;
   difficulty: "easy" | "medium" | "moderate" | "hard" | "mixed";
-  examMode: "NEET" | "JEE" | "BOTH";
+  examMode: string;
   questionTypeId?: string;
   exam?: "NEET" | "JEE_MAIN" | "JEE_ADVANCED";
   subject?: "Biology" | "Physics" | "Chemistry" | "Maths";
@@ -57,7 +57,7 @@ const QuestionSchema = new Schema<IQuestion>(
     correctOption: { type: String, enum: ["A", "B", "C", "D"] },
     explanation: String,
     difficulty: { type: String, enum: ["easy", "medium", "moderate", "hard", "mixed"], required: true },
-    examMode: { type: String, enum: ["NEET", "JEE", "BOTH"], required: true },
+    examMode: { type: String, required: true, trim: true },
     questionTypeId: { type: Schema.Types.ObjectId, ref: "QuestionType" },
     exam: { type: String, enum: ["NEET", "JEE_MAIN", "JEE_ADVANCED"] },
     subject: { type: String, enum: ["Biology", "Physics", "Chemistry", "Maths"] },

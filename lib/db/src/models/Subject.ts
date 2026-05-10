@@ -3,8 +3,8 @@ import mongoose, { Schema, Document } from "mongoose";
 export interface ISubject extends Document {
   id: string;
   name: string;
-  examMode: "NEET" | "JEE" | "BOTH";
-  examType?: "NEET" | "JEE" | "BOTH";
+  examMode: string;
+  examType?: string;
   modeId?: string;
   icon?: string;
   color?: string;
@@ -14,8 +14,8 @@ export interface ISubject extends Document {
 const SubjectSchema = new Schema<ISubject>(
   {
     name: { type: String, required: true },
-    examMode: { type: String, enum: ["NEET", "JEE", "BOTH"], required: true },
-    examType: { type: String, enum: ["NEET", "JEE", "BOTH"] },
+    examMode: { type: String, required: true, trim: true },
+    examType: { type: String, trim: true },
     modeId: { type: String, index: true },
     icon: String,
     color: String,

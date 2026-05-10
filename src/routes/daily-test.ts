@@ -100,13 +100,13 @@ async function getDailyTestConfig() {
   if (!settings) return DEFAULT_DAILY_TEST_CONFIG;
 
   return {
-    totalQuestions: Number(settings.totalQuestions || DEFAULT_DAILY_TEST_CONFIG.totalQuestions),
-    newQuestions: Number(settings.newQuestions || DEFAULT_DAILY_TEST_CONFIG.newQuestions),
-    weakQuestions: Number(settings.weakQuestions || DEFAULT_DAILY_TEST_CONFIG.weakQuestions),
-    revisionQuestions: Number(settings.revisionQuestions || DEFAULT_DAILY_TEST_CONFIG.revisionQuestions),
-    easyPercentage: Number(settings.easyPercentage || DEFAULT_DAILY_TEST_CONFIG.easyPercentage),
-    moderatePercentage: Number(settings.moderatePercentage || DEFAULT_DAILY_TEST_CONFIG.moderatePercentage),
-    hardPercentage: Number(settings.hardPercentage || DEFAULT_DAILY_TEST_CONFIG.hardPercentage),
+    totalQuestions: Number(settings.totalQuestions ?? DEFAULT_DAILY_TEST_CONFIG.totalQuestions),
+    newQuestions: Number(settings.newQuestions ?? DEFAULT_DAILY_TEST_CONFIG.newQuestions),
+    weakQuestions: Number(settings.weakQuestions ?? DEFAULT_DAILY_TEST_CONFIG.weakQuestions),
+    revisionQuestions: Number(settings.revisionQuestions ?? DEFAULT_DAILY_TEST_CONFIG.revisionQuestions),
+    easyPercentage: Number(settings.easyPercentage ?? DEFAULT_DAILY_TEST_CONFIG.easyPercentage),
+    moderatePercentage: Number(settings.moderatePercentage ?? DEFAULT_DAILY_TEST_CONFIG.moderatePercentage),
+    hardPercentage: Number(settings.hardPercentage ?? DEFAULT_DAILY_TEST_CONFIG.hardPercentage),
     enabled: Boolean(settings.enabled),
     adaptiveModeEnabled: settings.adaptiveModeEnabled !== false,
     repeatLookbackSessions: Math.max(1, Number(settings.repeatLookbackSessions ?? DEFAULT_DAILY_TEST_CONFIG.repeatLookbackSessions)),

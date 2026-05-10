@@ -1,6 +1,17 @@
 import { Router, type IRouter } from "express";
-import { User, ChapterPerformance, DailyAssignment, LearningSession, SessionAttempt, Subject, Chapter } from "@api/db";
-import { CompleteOnboardingBody } from "@api/zod";
+import {
+  User,
+  ChapterPerformance,
+  DailyAssignment,
+  LearningSession,
+  SessionAttempt,
+  Subject,
+  Chapter,
+  Mode,
+  LearningLevel,
+  RevisionSettings,
+  UserNotification,
+} from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { z } from "zod";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
@@ -8,17 +19,47 @@ import { getLatestActivitySummary, getOrCreateDailyAssignment, getQuestionsAttem
 
 const router: IRouter = Router();
 const UpdatePreferencesBody = z.object({
-  examMode: z.enum(["NEET", "JEE", "BOTH"]).optional(),
-  level: z.enum(["Beginner", "Average", "Topper"]).optional(),
+  examMode: z.string().trim().min(1).optional(),
+  level: z.string().trim().min(1).optional(),
+  name: z.string().optional(),
+  email: z.union([z.string().trim().email(), z.literal("")]).optional(),
+  address: z.string().optional(),
+});
+const CompleteOnboardingBody = z.object({
+  examMode: z.string().trim().min(1),
+  level: z.string().trim().min(1),
   name: z.string().optional(),
 });
+const DEFAULT_REVISION_CONFIG = {
+  wrongQuestionLimit: 10,
+  oldQuestionLimit: 5,
+  revisionEnabled: true,
+};
+
+async function ensureConfiguredMode(examMode?: string) {
+  if (!examMode) return;
+  const exists = await Mode.exists({ key: examMode });
+  if (!exists) {
+    throw new Error("Invalid exam mode");
+  }
+}
+
+async function ensureConfiguredLevel(level?: string) {
+  if (!level) return;
+  const exists = await LearningLevel.exists({ key: level, active: true });
+  if (!exists) {
+    throw new Error("Invalid learning level");
+  }
+}
 
 function userResponse(user: any) {
   const u = user.toJSON ? user.toJSON() : user;
   return {
     id: u.id,
     mobile: u.mobile,
+    email: u.email,
     name: u.name,
+    address: u.address,
     examMode: u.examMode,
     level: u.level,
     onboardingComplete: u.onboardingComplete,
@@ -130,11 +171,47 @@ async function buildNotifications(user: any, userId: string, revisionPendingCoun
     });
   }
 
-  return notifications;
+  const storedNotifications = await UserNotification.find({ userId, visibleInApp: { $ne: false } }).sort({ createdAt: -1 }).limit(20);
+  return [
+    ...storedNotifications.map((item: any) => ({
+      id: item.id,
+      title: item.title,
+      body: item.body,
+      type: item.type,
+      createdAt: item.createdAt.toISOString(),
+    })),
+    ...notifications,
+  ];
+}
+
+async function getConfiguredRevisionLimit() {
+  const settings = await RevisionSettings.findOne({});
+  if (!settings) return DEFAULT_REVISION_CONFIG.wrongQuestionLimit + DEFAULT_REVISION_CONFIG.oldQuestionLimit;
+  if (settings.revisionEnabled === false) return 0;
+  return Math.max(
+    0,
+    Number(settings.wrongQuestionLimit ?? DEFAULT_REVISION_CONFIG.wrongQuestionLimit)
+      + Number(settings.oldQuestionLimit ?? DEFAULT_REVISION_CONFIG.oldQuestionLimit),
+  );
+}
+
+function getRevisionPendingCount({
+  configuredLimit,
+  weakAreasCount,
+  totalQuestions,
+}: {
+  configuredLimit: number;
+  weakAreasCount: number;
+  totalQuestions?: number;
+}) {
+  if (configuredLimit <= 0) return 0;
+  const estimatedPending = Math.max(weakAreasCount * 3, Math.floor(Number(totalQuestions ?? 0) * 0.15));
+  return Math.min(configuredLimit, estimatedPending);
 }
 
 router.get("/me", requireAuth, async (req: AuthenticatedRequest, res) => {
   const user = req.user!;
+  const mode = user.examMode ? await Mode.findOne({ key: user.examMode }).lean() : null;
   let daily = {
     questionsRemainingToday: user.isPremium ? null : 20,
     dailySetAssignedCount: 0,
@@ -154,10 +231,13 @@ router.get("/me", requireAuth, async (req: AuthenticatedRequest, res) => {
     };
   }
 
-  const weakTopicsCount = user.onboardingComplete
-    ? await ChapterPerformance.countDocuments({ userId: req.userId!, isWeak: true })
+  const [weakTopicsCount, configuredRevisionLimit] = await Promise.all([
+    user.onboardingComplete ? ChapterPerformance.countDocuments({ userId: req.userId!, isWeak: true }) : 0,
+    getConfiguredRevisionLimit(),
+  ]);
+  const revisionPendingCount = user.onboardingComplete
+    ? getRevisionPendingCount({ configuredLimit: configuredRevisionLimit, weakAreasCount: weakTopicsCount })
     : 0;
-  const revisionPendingCount = user.onboardingComplete ? Math.min(15, weakTopicsCount * 3) : 0;
   const notifications = await buildNotifications(
     user,
     req.userId!,
@@ -173,7 +253,8 @@ router.get("/me", requireAuth, async (req: AuthenticatedRequest, res) => {
     modeMetadata: user.examMode
       ? {
           key: user.examMode,
-          label: user.examMode,
+          label: mode?.label ?? user.examMode,
+          description: mode?.description,
         }
       : null,
   });
@@ -182,6 +263,8 @@ router.get("/me", requireAuth, async (req: AuthenticatedRequest, res) => {
 router.post("/onboarding", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const body = CompleteOnboardingBody.parse(req.body);
+    await ensureConfiguredMode(body.examMode);
+    await ensureConfiguredLevel(body.level);
     const updated = await User.findByIdAndUpdate(
       req.userId,
       { examMode: body.examMode, level: body.level, name: body.name, onboardingComplete: true },
@@ -202,14 +285,30 @@ router.post("/preferences", requireAuth, async (req: AuthenticatedRequest, res) 
   try {
     const body = UpdatePreferencesBody.parse(req.body);
     const updates: Record<string, unknown> = {};
+    const unset: Record<string, unknown> = {};
 
-    if (body.examMode) updates["examMode"] = body.examMode;
-    if (body.level) updates["level"] = body.level;
+    if (body.examMode) {
+      await ensureConfiguredMode(body.examMode);
+      updates["examMode"] = body.examMode;
+    }
+    if (body.level) {
+      await ensureConfiguredLevel(body.level);
+      updates["level"] = body.level;
+    }
     if (body.name !== undefined) updates["name"] = body.name;
+    if (body.email !== undefined) {
+      const email = String(body.email || "").trim().toLowerCase();
+      if (email) updates["email"] = email;
+      else unset["email"] = "";
+    }
+    if (body.address !== undefined) updates["address"] = body.address;
 
     const updated = await User.findByIdAndUpdate(
       req.userId,
-      updates,
+      {
+        ...(Object.keys(updates).length ? { $set: updates } : {}),
+        ...(Object.keys(unset).length ? { $unset: unset } : {}),
+      },
       { new: true },
     );
 
@@ -221,13 +320,14 @@ router.post("/preferences", requireAuth, async (req: AuthenticatedRequest, res) 
     res.json(userResponse(updated));
   } catch (error) {
     req.log.error({ error }, "Update preferences error");
-    res.status(400).json({ error: "preferences_failed", message: "Failed to update preferences" });
+    const message = (error as any)?.code === 11000 ? "This email is already used by another account" : "Failed to update preferences";
+    res.status(400).json({ error: "preferences_failed", message });
   }
 });
 
 router.get("/stats", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
-  const [attempts, weakAreas, user, assignment, attemptedToday, latestActivitySummary, eligibleSubjects, chapterAttemptSummary] = await Promise.all([
+  const [attempts, weakAreas, user, assignment, attemptedToday, latestActivitySummary, eligibleSubjects, chapterAttemptSummary, configuredRevisionLimit] = await Promise.all([
     SessionAttempt.find({ userId, completedAt: { $ne: null } }),
     ChapterPerformance.find({ userId, isWeak: true }),
     User.findById(userId),
@@ -243,6 +343,7 @@ router.get("/stats", requireAuth, requireOnboardingComplete, async (req: Authent
       { $match: { userId } },
       { $group: { _id: null, totalChapterAttempts: { $sum: "$totalAttempts" } } },
     ]),
+    getConfiguredRevisionLimit(),
   ]);
 
   const totalTests = attempts.length;
@@ -306,7 +407,11 @@ router.get("/stats", requireAuth, requireOnboardingComplete, async (req: Authent
           : 720;
   const predictedScore = Math.round(predictedMaxScore * mockPerformanceRatio);
   const predictionRange = mockPredictionHistory.length > 0 ? getPredictionBandFromRatio(mockPerformanceRatio) : "No Mock Data";
-  const revisionPendingCount = Math.min(15, Math.max(weakAreas.length * 3, Math.floor(totalQuestions * 0.15)));
+  const revisionPendingCount = getRevisionPendingCount({
+    configuredLimit: configuredRevisionLimit,
+    weakAreasCount: weakAreas.length,
+    totalQuestions,
+  });
   const avgTimePerQuestion = totalQuestions > 0 ? Math.round((totalTimeTaken / totalQuestions) * 100) / 100 : 0;
   const currentStreak = getCurrentStreakFromDates(
     attempts
@@ -342,12 +447,15 @@ router.get("/stats", requireAuth, requireOnboardingComplete, async (req: Authent
 router.get("/notifications", requireAuth, async (req: AuthenticatedRequest, res) => {
   const user = req.user!;
   const userId = req.userId!;
-  const [weakTopicsCount, attemptedToday] = await Promise.all([
+  const [weakTopicsCount, attemptedToday, configuredRevisionLimit] = await Promise.all([
     user.onboardingComplete ? ChapterPerformance.countDocuments({ userId, isWeak: true }) : 0,
     user.onboardingComplete ? getQuestionsAttemptedToday(userId) : 0,
+    getConfiguredRevisionLimit(),
   ]);
   const remainingToday = user.isPremium ? null : Math.max(0, 20 - attemptedToday);
-  const revisionPendingCount = user.onboardingComplete ? Math.min(15, weakTopicsCount * 3) : 0;
+  const revisionPendingCount = user.onboardingComplete
+    ? getRevisionPendingCount({ configuredLimit: configuredRevisionLimit, weakAreasCount: weakTopicsCount })
+    : 0;
   const notifications = await buildNotifications(user, userId, revisionPendingCount, weakTopicsCount, remainingToday);
   res.json({
     count: notifications.length,

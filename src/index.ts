@@ -5,6 +5,7 @@ import { logger } from "./lib/logger";
 import { syncQuestionTypeCatalog } from "./lib/question-type-catalog";
 import 'dotenv/config';
 import { createServer } from "node:http";
+import { startExpiryReminderWorker } from "./lib/invoices";
 
 const rawPort = process.env["PORT"];
 
@@ -63,6 +64,7 @@ async function listenWithFallback(preferredPort: number) {
     await connect();
     await syncDifficultyCatalog();
     await syncQuestionTypeCatalog();
+    startExpiryReminderWorker();
     logger.info("Connected to MongoDB");
   } catch (err) {
     logger.error({ err }, "Failed to connect to MongoDB");

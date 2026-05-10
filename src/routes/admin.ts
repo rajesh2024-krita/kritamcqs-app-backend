@@ -10,24 +10,32 @@ import {
   ChapterPerformance,
   Difficulty,
   ExamType,
+  Invoice,
+  InvoiceSettings,
+  LearningLevel,
   LearningSession,
   MigrationLog,
   Mistake,
   Mode,
+  NotificationSettings,
   Question,
   QuestionAttempt,
   QuestionType,
   SessionAttempt,
   Subject,
   Subscription,
+  SubscriptionPlan,
   Test,
   User,
+  UserNotification,
   Year,
 } from "@api/db";
 import type { AuthenticatedRequest } from "../middlewares/auth";
 import { requireAdmin } from "../middlewares/auth";
 import { resolveDifficultySelection } from "../lib/difficulties";
 import { getExamTypeLabel, normalizeQuestionDocument } from "../lib/question-framework";
+import { generateInvoiceForSubscription, getInvoiceSettings, getNotificationSettings, processExpiryReminders } from "../lib/invoices";
+import { sendEmail } from "../lib/simple-email";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -35,6 +43,7 @@ const CHUNK_SIZE = 100;
 const QUESTION_ASSET_DIR = process.env["QUESTION_ASSET_DIR"]
   ? path.resolve(process.env["QUESTION_ASSET_DIR"])
   : path.resolve(process.cwd(), "../krita-neet-jee/public/uploads/question-assets");
+const INVOICE_ASSET_DIR = path.resolve(process.cwd(), "uploads", "invoice-assets");
 const IMAGE_URL_FIELDS = [
   "questionImageUrl",
   "optionAImageUrl",
@@ -192,6 +201,20 @@ function serializeMode(mode: any) {
     key: raw.key,
     label: raw.label,
     description: raw.description ?? "",
+    createdAt: raw.createdAt,
+    updatedAt: raw.updatedAt,
+  };
+}
+
+function serializeLearningLevel(level: any) {
+  const raw = typeof level?.toJSON === "function" ? level.toJSON() : level;
+  return {
+    id: String(raw.id ?? raw._id),
+    key: raw.key,
+    label: raw.label,
+    description: raw.description ?? "",
+    sortOrder: Number(raw.sortOrder ?? 0),
+    active: raw.active !== false,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
   };
@@ -1579,6 +1602,61 @@ router.delete("/modes/:id", wrap(async (req, res) => {
   sendSuccess(res, null, { message: "Mode deleted successfully" });
 }));
 
+router.get("/learning-levels", wrap(async (req, res) => {
+  const query = req.query as Record<string, unknown>;
+  const { page, limit, skip } = getPagination(query);
+  const filters = { ...exactFilter(query, ["active"]), ...buildSearchFilter(query, ["key", "label", "description"]) };
+  const sort = normalizeSort(query, ["createdAt", "updatedAt", "sortOrder", "label", "key"], "sortOrder");
+  const [items, total] = await Promise.all([
+    LearningLevel.find(filters).sort(sort).skip(skip).limit(limit),
+    LearningLevel.countDocuments(filters),
+  ]);
+  sendSuccess(res, items.map(serializeLearningLevel), { meta: { total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) } });
+}));
+
+router.get("/learning-levels/:id", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "learning level");
+  const item = await LearningLevel.findById(req.params.id);
+  if (!item) throw Object.assign(new Error("Learning level not found"), { statusCode: 404 });
+  sendSuccess(res, serializeLearningLevel(item));
+}));
+
+router.post("/learning-levels/bulk-delete", wrap(async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String).filter((id: string) => mongoose.isValidObjectId(id)) : [];
+  const result = ids.length ? await LearningLevel.deleteMany({ _id: { $in: ids } }) : { deletedCount: 0 };
+  sendSuccess(res, { deletedCount: Number(result.deletedCount || 0), failedCount: 0 }, { message: "Learning levels deleted successfully" });
+}));
+
+router.post("/learning-levels", wrap(async (req, res) => {
+  const item = await LearningLevel.create({
+    key: String(req.body?.key ?? "").trim(),
+    label: String(req.body?.label ?? "").trim(),
+    description: String(req.body?.description ?? "").trim() || undefined,
+    sortOrder: Number(req.body?.sortOrder ?? 0),
+    active: req.body?.active === undefined ? true : Boolean(req.body.active),
+  });
+  sendSuccess(res, serializeLearningLevel(item), { status: 201, message: "Learning level created successfully" });
+}));
+
+router.put("/learning-levels/:id", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "learning level");
+  const item = await LearningLevel.findById(req.params.id);
+  if (!item) throw Object.assign(new Error("Learning level not found"), { statusCode: 404 });
+  if (req.body?.key !== undefined) item.key = String(req.body.key).trim();
+  if (req.body?.label !== undefined) item.label = String(req.body.label).trim();
+  if (req.body?.description !== undefined) item.description = String(req.body.description).trim();
+  if (req.body?.sortOrder !== undefined) item.sortOrder = Number(req.body.sortOrder ?? 0);
+  if (req.body?.active !== undefined) item.active = Boolean(req.body.active);
+  await item.save();
+  sendSuccess(res, serializeLearningLevel(item), { message: "Learning level updated successfully" });
+}));
+
+router.delete("/learning-levels/:id", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "learning level");
+  await LearningLevel.findByIdAndDelete(req.params.id);
+  sendSuccess(res, null, { message: "Learning level deleted successfully" });
+}));
+
 router.get("/subjects", wrap(async (req, res) => {
   const query = req.query as Record<string, unknown>;
   const { page, limit, skip } = getPagination(query);
@@ -1944,6 +2022,281 @@ router.delete("/users/:id", wrap(async (req, res) => {
   assertObjectId(String(req.params.id), "user");
   await User.findByIdAndDelete(req.params.id);
   sendSuccess(res, null, { message: "User deleted successfully" });
+}));
+
+router.get("/invoice-settings", wrap(async (_req, res) => {
+  sendSuccess(res, (await getInvoiceSettings()).toJSON());
+}));
+
+router.post("/invoice-settings/logo", upload.single("logo"), wrap(async (req, res) => {
+  if (!req.file?.buffer) throw Object.assign(new Error("Logo file is required"), { statusCode: 400 });
+  await fs.mkdir(INVOICE_ASSET_DIR, { recursive: true });
+  const extension = inferImageExtension(req.file.originalname || "", req.file.mimetype || "");
+  const fileName = `invoice-logo-${Date.now()}${extension}`;
+  const fullPath = path.join(INVOICE_ASSET_DIR, fileName);
+  await fs.writeFile(fullPath, req.file.buffer);
+  const logoUrl = `/uploads/invoice-assets/${fileName}`;
+  const settings = await getInvoiceSettings();
+  settings.logoUrl = logoUrl;
+  await settings.save();
+  sendSuccess(res, { logoUrl }, { message: "Invoice logo uploaded" });
+}));
+
+router.post("/invoice-settings", wrap(async (req, res) => {
+  const existing = await getInvoiceSettings();
+  const body = req.body ?? {};
+  existing.enabled = body.enabled === undefined ? existing.enabled : parseBoolean(body.enabled);
+  existing.emailEnabled = body.emailEnabled === undefined ? existing.emailEnabled : parseBoolean(body.emailEnabled);
+  existing.companyName = String(body.companyName ?? existing.companyName ?? "").trim() || "Krita NEET JEE";
+  existing.companyAddress = String(body.companyAddress ?? "");
+  existing.companyEmail = String(body.companyEmail ?? "");
+  existing.companyPhone = String(body.companyPhone ?? "");
+  existing.logoUrl = String(body.logoUrl ?? existing.logoUrl ?? "");
+  existing.templateTitle = String(body.templateTitle ?? existing.templateTitle ?? "Tax Invoice");
+  existing.templateIntro = String(body.templateIntro ?? existing.templateIntro ?? "");
+  existing.footerText = String(body.footerText ?? existing.footerText ?? "");
+  existing.productDetailsTitle = String(body.productDetailsTitle ?? existing.productDetailsTitle ?? "Product Details");
+  existing.paidStampText = String(body.paidStampText ?? existing.paidStampText ?? "PAID");
+  if (Array.isArray(body.fields)) {
+    existing.fields = body.fields.map((field: any) => ({
+      ...field,
+      id: String(field.id ?? `field-${Date.now()}`),
+      type: String(field.type ?? "text"),
+      label: String(field.label ?? field.content ?? ""),
+      content: String(field.content ?? field.label ?? ""),
+      src: String(field.src ?? ""),
+      x: Math.max(0, Math.min(560, Number(field.x ?? 48))),
+      y: Math.max(0, Math.min(820, Number(field.y ?? 120))),
+      width: Math.max(10, Math.min(595, Number(field.width ?? 120))),
+      height: Math.max(10, Math.min(842, Number(field.height ?? 80))),
+      size: Math.max(6, Math.min(96, Number(field.size ?? field.style?.fontSize ?? 10))),
+      rotation: Number(field.rotation ?? 0),
+      opacity: Math.max(0, Math.min(1, Number(field.opacity ?? 1))),
+      zIndex: Number(field.zIndex ?? 1),
+      enabled: field.enabled !== false,
+    })) as any;
+  }
+  existing.page = body.page || existing.page || {};
+  existing.reusableBlocks = Array.isArray(body.reusableBlocks) ? body.reusableBlocks : existing.reusableBlocks;
+  existing.defaultTemplate = body.defaultTemplate === undefined ? existing.defaultTemplate : Boolean(body.defaultTemplate);
+  existing.versions = [
+    {
+      savedAt: new Date(),
+      label: `Version ${new Date().toLocaleString("en-IN")}`,
+      fields: existing.fields,
+      page: existing.page,
+    },
+    ...(Array.isArray(existing.versions) ? existing.versions.slice(0, 9) : []),
+  ] as any;
+  const smtp = body.smtp ?? {};
+  existing.smtp = {
+    host: String(smtp.host ?? existing.smtp?.host ?? ""),
+    port: Number(smtp.port ?? existing.smtp?.port ?? 587),
+    secure: parseBoolean(smtp.secure ?? existing.smtp?.secure),
+    user: String(smtp.user ?? existing.smtp?.user ?? ""),
+    pass: smtp.pass ? String(smtp.pass) : String(existing.smtp?.pass ?? ""),
+    fromName: String(smtp.fromName ?? existing.smtp?.fromName ?? "Krita Admin"),
+    fromEmail: String(smtp.fromEmail ?? existing.smtp?.fromEmail ?? ""),
+  } as any;
+  await existing.save();
+  sendSuccess(res, existing.toJSON(), { message: "Invoice settings saved" });
+}));
+
+router.post("/invoice-settings/test-email", wrap(async (req, res) => {
+  const settings = await getInvoiceSettings();
+  const to = String(req.body?.to || settings.companyEmail || settings.smtp?.fromEmail || "").trim();
+  if (!to) throw Object.assign(new Error("Test recipient email is required"), { statusCode: 400 });
+  const result = await sendEmail({
+    smtp: settings.smtp || {},
+    to,
+    subject: "Krita invoice SMTP test",
+    text: "SMTP is configured correctly for invoice and reminder emails.",
+  });
+  sendSuccess(res, result, { message: result.skipped ? "SMTP test skipped" : "SMTP test email sent" });
+}));
+
+function calculateInvoiceTotals(items: any[] = []) {
+  return items.reduce(
+    (acc, item) => {
+      const quantity = Math.max(0, Number(item.quantity || 0));
+      const price = Math.max(0, Number(item.price || 0));
+      const discount = Math.max(0, Number(item.discount || 0));
+      const tax = Math.max(0, Number(item.tax || 0));
+      const lineBase = quantity * price;
+      const lineDiscount = Math.min(lineBase, discount);
+      const taxable = Math.max(0, lineBase - lineDiscount);
+      const lineTax = (taxable * tax) / 100;
+      const total = taxable + lineTax;
+      acc.subtotal += lineBase;
+      acc.discountTotal += lineDiscount;
+      acc.taxTotal += lineTax;
+      acc.grandTotal += total;
+      acc.items.push({ ...item, quantity, price, discount: lineDiscount, tax, total });
+      return acc;
+    },
+    { subtotal: 0, discountTotal: 0, taxTotal: 0, grandTotal: 0, items: [] as any[] },
+  );
+}
+
+function normalizeInvoicePayload(body: Record<string, any>, existing: any = {}) {
+  const totals = calculateInvoiceTotals(Array.isArray(body.items) ? body.items : existing.items || []);
+  const now = new Date();
+  return {
+    invoiceNumber: String(body.invoiceNumber || existing.invoiceNumber || `INV-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${String(Date.now()).slice(-6)}`).trim(),
+    userId: String(body.userId || existing.userId || "manual"),
+    subscriptionId: String(body.subscriptionId || existing.subscriptionId || `manual-${Date.now()}`),
+    planId: String(body.planId || existing.planId || "manual"),
+    userName: String(body.userName || body.customerCompany?.name || existing.userName || ""),
+    userEmail: String(body.userEmail || body.customerCompany?.email || existing.userEmail || ""),
+    userMobile: String(body.userMobile || body.customerCompany?.phone || existing.userMobile || ""),
+    amount: Number(totals.grandTotal || body.amount || existing.amount || 0),
+    currency: String(body.currency || existing.currency || "INR"),
+    status: String(body.status || existing.status || "draft"),
+    transactionId: String(body.transactionId || existing.transactionId || ""),
+    invoiceDate: body.invoiceDate ? new Date(String(body.invoiceDate)) : existing.invoiceDate || now,
+    dueDate: body.dueDate ? new Date(String(body.dueDate)) : existing.dueDate,
+    billingCompany: body.billingCompany || existing.billingCompany || {},
+    customerCompany: body.customerCompany || existing.customerCompany || {},
+    taxDetails: body.taxDetails || existing.taxDetails || {},
+    items: totals.items,
+    subtotal: Math.round(totals.subtotal * 100) / 100,
+    taxTotal: Math.round(totals.taxTotal * 100) / 100,
+    discountTotal: Math.round(totals.discountTotal * 100) / 100,
+    grandTotal: Math.round(totals.grandTotal * 100) / 100,
+    notes: String(body.notes || existing.notes || ""),
+    terms: String(body.terms || existing.terms || ""),
+    signatureUrl: String(body.signatureUrl || existing.signatureUrl || ""),
+    logoUrl: String(body.logoUrl || existing.logoUrl || ""),
+    qrCode: String(body.qrCode || existing.qrCode || ""),
+    templateId: String(body.templateId || existing.templateId || ""),
+    shareToken: String(body.shareToken || existing.shareToken || crypto.randomBytes(12).toString("hex")),
+  };
+}
+
+router.get("/invoices", wrap(async (req, res) => {
+  const query = req.query as Record<string, unknown>;
+  const { page, limit, skip } = getPagination(query);
+  const filters = { ...exactFilter(query, ["status", "emailStatus"]), ...buildSearchFilter(query, ["invoiceNumber", "userName", "userEmail", "planId"]) };
+  const [items, total] = await Promise.all([
+    Invoice.find(filters).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    Invoice.countDocuments(filters),
+  ]);
+  sendSuccess(res, items.map((item: any) => item.toJSON()), { meta: { total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) } });
+}));
+
+router.post("/invoices", wrap(async (req, res) => {
+  const payload = normalizeInvoicePayload(req.body ?? {});
+  const invoice = await Invoice.create({
+    ...payload,
+    emailStatus: "pending",
+    issuedAt: payload.invoiceDate || new Date(),
+    activityLogs: [{ action: "created", message: "Manual invoice created", at: new Date() }],
+  });
+  sendSuccess(res, invoice.toJSON(), { status: 201, message: "Invoice created" });
+}));
+
+router.put("/invoices/:id", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "invoice");
+  const invoice = await Invoice.findById(req.params.id);
+  if (!invoice) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+  Object.assign(invoice, normalizeInvoicePayload(req.body ?? {}, invoice.toJSON()));
+  invoice.activityLogs = [...(invoice.activityLogs || []), { action: "updated", message: "Invoice edited", at: new Date() }] as any;
+  await invoice.save();
+  sendSuccess(res, invoice.toJSON(), { message: "Invoice updated" });
+}));
+
+router.post("/invoices/:id/duplicate", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "invoice");
+  const invoice = await Invoice.findById(req.params.id);
+  if (!invoice) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+  const raw = invoice.toJSON();
+  delete raw.id;
+  const copy = await Invoice.create({
+    ...raw,
+    invoiceNumber: `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${String(Date.now()).slice(-6)}`,
+    status: "draft",
+    emailStatus: "pending",
+    shareToken: crypto.randomBytes(12).toString("hex"),
+    activityLogs: [{ action: "duplicated", message: `Duplicated from ${invoice.invoiceNumber}`, at: new Date() }],
+  });
+  sendSuccess(res, copy.toJSON(), { status: 201, message: "Invoice duplicated" });
+}));
+
+router.post("/invoices/:id/send", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "invoice");
+  const invoice = await Invoice.findById(req.params.id);
+  if (!invoice) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+  const settings = await getInvoiceSettings();
+  if (!invoice.userEmail) throw Object.assign(new Error("Invoice customer email is missing"), { statusCode: 400 });
+  const result = await sendEmail({
+    smtp: settings.smtp || {},
+    to: invoice.userEmail,
+    subject: String(req.body?.subject || `Invoice ${invoice.invoiceNumber} from ${settings.companyName}`),
+    text: String(req.body?.body || `Hi ${invoice.userName || "Customer"},\n\nYour invoice ${invoice.invoiceNumber} amount is ${invoice.currency} ${invoice.amount}.\nPayment status: ${invoice.status}.\nTransaction ID: ${invoice.transactionId || "-"}.\n\n${settings.companyName}`),
+  });
+  invoice.emailStatus = result.skipped ? "skipped" : "sent";
+  invoice.status = invoice.status === "draft" ? "sent" : invoice.status;
+  invoice.sentAt = result.skipped ? undefined : new Date();
+  invoice.emailError = result.skipped ? result.reason : "";
+  invoice.activityLogs = [...(invoice.activityLogs || []), { action: "email", message: result.skipped ? "Email skipped" : "Invoice email sent", at: new Date() }] as any;
+  await invoice.save();
+  sendSuccess(res, invoice.toJSON(), { message: result.skipped ? "Invoice email skipped" : "Invoice email sent" });
+}));
+
+router.delete("/invoices/:id", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "invoice");
+  await Invoice.findByIdAndDelete(req.params.id);
+  sendSuccess(res, null, { message: "Invoice deleted" });
+}));
+
+router.post("/invoices/subscriptions/:subscriptionId/generate", wrap(async (req, res) => {
+  assertObjectId(String(req.params.subscriptionId), "subscription");
+  const invoice = await generateInvoiceForSubscription(String(req.params.subscriptionId));
+  sendSuccess(res, invoice.toJSON(), { status: 201, message: "Invoice generated" });
+}));
+
+router.get("/notification-settings", wrap(async (_req, res) => {
+  sendSuccess(res, (await getNotificationSettings()).toJSON());
+}));
+
+router.post("/notification-settings", wrap(async (req, res) => {
+  const settings = await getNotificationSettings();
+  const body = req.body ?? {};
+  settings.enabled = body.enabled === undefined ? settings.enabled : parseBoolean(body.enabled);
+  settings.emailEnabled = body.emailEnabled === undefined ? settings.emailEnabled : parseBoolean(body.emailEnabled);
+  settings.inAppEnabled = body.inAppEnabled === undefined ? settings.inAppEnabled : parseBoolean(body.inAppEnabled);
+  if (Array.isArray(body.reminders)) {
+    settings.reminders = body.reminders.map((item: any) => ({
+      daysBefore: Math.max(0, Number(item.daysBefore ?? 0)),
+      enabled: item.enabled !== false,
+      title: String(item.title ?? ""),
+      body: String(item.body ?? ""),
+      emailSubject: String(item.emailSubject ?? ""),
+      emailBody: String(item.emailBody ?? ""),
+    })) as any;
+  }
+  await settings.save();
+  sendSuccess(res, settings.toJSON(), { message: "Notification settings saved" });
+}));
+
+router.post("/notification-settings/run-expiry-reminders", wrap(async (_req, res) => {
+  sendSuccess(res, await processExpiryReminders(), { message: "Expiry reminders processed" });
+}));
+
+router.get("/sessions", wrap(async (req, res) => {
+  const query = req.query as Record<string, unknown>;
+  const { page, limit, skip } = getPagination(query);
+  const filters = { ...exactFilter(query, ["type", "origin", "userId"]), ...buildSearchFilter(query, ["title"]) };
+  const [items, total] = await Promise.all([
+    LearningSession.find(filters).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    LearningSession.countDocuments(filters),
+  ]);
+  const userIds = [...new Set(items.map((item: any) => String(item.userId)).filter(Boolean))];
+  const users = userIds.length ? await User.find({ _id: { $in: userIds } }) : [];
+  const userMap = new Map(users.map((user: any) => [String(user._id), serializeUser(user)]));
+  sendSuccess(res, items.map((item: any) => ({ ...item.toJSON(), user: userMap.get(String(item.userId)) ?? null })), {
+    meta: { total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) },
+  });
 }));
 
 export default router;

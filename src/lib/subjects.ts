@@ -1,13 +1,13 @@
 import { Chapter, Question, Subject, mongoose, type ISubject } from "@api/db";
 
-export type ManagedMode = "NEET" | "JEE" | "BOTH";
-export type ManagedExamType = "NEET" | "JEE";
+export type ManagedMode = string;
+export type ManagedExamType = string;
 
 export type SubjectSummary = {
   id: string;
   name: string;
-  examMode: "NEET" | "JEE" | "BOTH";
-  examType?: "NEET" | "JEE" | "BOTH";
+  examMode: string;
+  examType?: string;
   icon?: string;
   color?: string;
   totalChapters?: number;
@@ -16,8 +16,7 @@ export type SubjectSummary = {
 };
 
 function normalizeMode(mode?: string | null): ManagedMode {
-  if (mode === "JEE" || mode === "BOTH") return mode;
-  return "NEET";
+  return String(mode || "").trim() || "BOTH";
 }
 
 function normalizeName(name?: string) {
@@ -35,14 +34,14 @@ function getSubjectNameKey(subject: Pick<ISubject, "name"> | Record<string, any>
 
 function getSubjectMode(subject: Pick<ISubject, "examMode" | "examType"> | Record<string, any>): ManagedMode | undefined {
   const mode = subject.examType ?? subject.examMode;
-  if (mode === "NEET" || mode === "JEE" || mode === "BOTH") return mode;
+  if (mode) return String(mode);
   if (mode === "JEE_MAIN" || mode === "JEE_ADVANCED") return "JEE";
   return undefined;
 }
 
 function getRequestedMode(filter: Record<string, unknown>): ManagedMode | undefined {
   const rawMode = typeof filter.examMode === "string" ? filter.examMode : typeof filter.examType === "string" ? filter.examType : undefined;
-  if (rawMode === "NEET" || rawMode === "JEE" || rawMode === "BOTH") return rawMode;
+  if (rawMode) return rawMode;
   if (rawMode === "JEE_MAIN" || rawMode === "JEE_ADVANCED") return "JEE";
   return undefined;
 }

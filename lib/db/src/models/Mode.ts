@@ -2,7 +2,7 @@ import mongoose, { Schema, Document } from "mongoose";
 
 export interface IMode extends Document {
   id: string;
-  key: "NEET" | "JEE" | "BOTH";
+  key: string;
   label: string;
   description?: string;
   createdAt: Date;
@@ -11,7 +11,7 @@ export interface IMode extends Document {
 
 const ModeSchema = new Schema<IMode>(
   {
-    key: { type: String, enum: ["NEET", "JEE", "BOTH"], required: true, unique: true },
+    key: { type: String, required: true, unique: true, trim: true, index: true },
     label: { type: String, required: true },
     description: String,
   },
