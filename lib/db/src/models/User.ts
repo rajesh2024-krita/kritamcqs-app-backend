@@ -13,6 +13,21 @@ export interface IUser extends Document {
   mobileVerified: boolean;
   isPremium: boolean;
   premiumExpiresAt?: Date;
+  lastPurchase?: {
+    subscriptionId?: string;
+    planId?: string;
+    planAmount?: number;
+    discountAmount?: number;
+    taxAmount?: number;
+    convenienceCharge?: number;
+    convenienceChargeGst?: number;
+    finalAmount?: number;
+    currency?: string;
+    razorpayOrderId?: string;
+    razorpayPaymentId?: string;
+    paymentStatus?: string;
+    transactionDate?: Date;
+  };
   isAdmin: boolean;
   migratedFromOldApp: boolean;
   createdAt: Date;
@@ -32,6 +47,21 @@ const UserSchema = new Schema<IUser>(
     mobileVerified: { type: Boolean, default: false },
     isPremium: { type: Boolean, default: false },
     premiumExpiresAt: Date,
+    lastPurchase: {
+      subscriptionId: String,
+      planId: String,
+      planAmount: Number,
+      discountAmount: Number,
+      taxAmount: Number,
+      convenienceCharge: Number,
+      convenienceChargeGst: Number,
+      finalAmount: Number,
+      currency: String,
+      razorpayOrderId: String,
+      razorpayPaymentId: String,
+      paymentStatus: String,
+      transactionDate: Date,
+    },
     isAdmin: { type: Boolean, default: false },
     migratedFromOldApp: { type: Boolean, default: false },
   },

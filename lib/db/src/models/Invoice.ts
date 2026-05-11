@@ -21,6 +21,8 @@ export interface IInvoice extends Document {
   items?: Array<Record<string, unknown>>;
   subtotal?: number;
   taxTotal?: number;
+  convenienceCharge?: number;
+  convenienceChargeGst?: number;
   discountTotal?: number;
   grandTotal?: number;
   notes?: string;
@@ -63,6 +65,8 @@ const invoiceSchema = new Schema<IInvoice>(
     items: { type: [Schema.Types.Mixed], default: [] },
     subtotal: { type: Number, default: 0 },
     taxTotal: { type: Number, default: 0 },
+    convenienceCharge: { type: Number, default: 0 },
+    convenienceChargeGst: { type: Number, default: 0 },
     discountTotal: { type: Number, default: 0 },
     grandTotal: { type: Number, default: 0 },
     notes: String,

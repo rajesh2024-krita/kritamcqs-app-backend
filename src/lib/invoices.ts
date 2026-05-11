@@ -135,6 +135,10 @@ function rotateOp(inner: string, x: number, y: number, angle = 0) {
   return `q 1 0 0 1 ${px} ${py} cm ${cos} ${sin} ${(-Math.sin(radians)).toFixed(6)} ${cos} 0 0 cm 1 0 0 1 ${-px} ${-py} cm ${inner} Q`;
 }
 
+function rotateCenterOp(inner: string, x: number, y: number, width: number, height: number, angle = 0) {
+  return rotateOp(inner, x + width / 2, y + height / 2, angle);
+}
+
 function colorCircleOp(x: number, y: number, radius: number, fill = "#ffffff", stroke = "#000000", strokeWidth = 0) {
   const c = 0.5522847498;
   const cx = x + radius;
@@ -236,28 +240,52 @@ function drawInvoiceTable(field: any, data: Record<string, unknown>, metrics: an
   const { x, y, width, height } = fieldGeometry(field, metrics);
   const cols = Math.max(1, Number(meta.cols || meta.headers?.length || 1));
   const rows = Math.max(1, Number(meta.rows || 1));
-  const rowHeight = height / rows;
-  const colWidth = width / cols;
+  const style = {
+    borderColor: "#cbd5e1",
+    borderWidth: 0.5,
+    borderStyle: "solid",
+    headerBackground: "#0f172a",
+    headerTextColor: "#ffffff",
+    bodyTextColor: "#334155",
+    bodyBackground: "#ffffff",
+    alternateRowBackground: "#f8fafc",
+    useAlternateRows: false,
+    padding: 6,
+    ...(meta.style || {}),
+  };
+  const rowHeights = Array.from({ length: rows }).map((_, index) => Number(meta.rowHeights?.[index] || height / rows));
+  const rowTotal = rowHeights.reduce((sum, value) => sum + value, 0) || 1;
+  const scaledRows = rowHeights.map((value) => (value / rowTotal) * height);
+  const colWidths = Array.from({ length: cols }).map((_, index) => Number(meta.colWidths?.[index] || width / cols));
+  const colTotal = colWidths.reduce((sum, value) => sum + value, 0) || 1;
+  const scaledCols = colWidths.map((value) => (value / colTotal) * width);
   const headers = Array.from({ length: cols }).map((_, index) => meta.headers?.[index] || `Column ${index + 1}`);
   const cells = Array.isArray(meta.cells) ? meta.cells : [];
   const ops: string[] = [];
+  const borderWidth = Number(style.borderWidth || 0);
 
+  let currentX = x;
   headers.forEach((header, index) => {
-    const cellX = x + index * colWidth;
-    ops.push(colorRectOp(cellX, y, colWidth, rowHeight, "#0f172a", "#cbd5e1", 0.7));
-    ops.push(styledTextOp(replaceTokens(String(header), data), cellX + 6, y + rowHeight / 2 + 4, Math.max(4, rowHeight * 0.32), "#ffffff", { fontWeight: "bold" }));
+    const colWidth = scaledCols[index];
+    ops.push(colorRectOp(currentX, y, colWidth, scaledRows[0], style.headerBackground, style.borderColor, borderWidth));
+    ops.push(styledTextOp(replaceTokens(String(header), data), currentX + Number(style.padding || 0), y + scaledRows[0] / 2 + 4, Math.max(4, scaledRows[0] * 0.32), style.headerTextColor, { fontWeight: "bold" }));
+    currentX += colWidth;
   });
 
+  let currentY = y + scaledRows[0];
   for (let row = 1; row < rows; row += 1) {
+    currentX = x;
     for (let col = 0; col < cols; col += 1) {
-      const cellX = x + col * colWidth;
-      const cellY = y + row * rowHeight;
       const value = cells[row - 1]?.[col] ?? "";
-      ops.push(colorRectOp(cellX, cellY, colWidth, rowHeight, "#ffffff", "#cbd5e1", 0.5));
-      ops.push(styledTextOp(replaceTokens(String(value), data), cellX + 6, cellY + rowHeight / 2 + 4, Math.max(4, rowHeight * 0.3), "#334155", {}));
+      const colWidth = scaledCols[col];
+      const fill = meta.rowColors?.[row] || meta.colColors?.[col] || (style.useAlternateRows && row % 2 === 0 ? style.alternateRowBackground : style.bodyBackground);
+      ops.push(colorRectOp(currentX, currentY, colWidth, scaledRows[row], fill, style.borderColor, borderWidth));
+      ops.push(styledTextOp(replaceTokens(String(value), data), currentX + Number(style.padding || 0), currentY + scaledRows[row] / 2 + 4, Math.max(4, scaledRows[row] * 0.3), style.bodyTextColor, {}));
+      currentX += colWidth;
     }
+    currentY += scaledRows[row];
   }
-  return ops;
+  return Number(raw.angle || 0) ? [rotateCenterOp(ops.join("\n"), x, y, width, height, raw.angle)] : ops;
 }
 
 type PdfImage = {
@@ -287,11 +315,11 @@ function drawFieldObject(field: any, data: Record<string, unknown>, metrics: any
     const fontSize = Math.max(1, Number(field.size ?? (Number(raw.fontSize || 10) * metrics.scaleY)));
     ops.push(...String(content).split(/\r?\n/).map((line, index) => styledTextOp(line, x, y + index * (fontSize + 4), fontSize, fill, raw)));
   } else if (type === "rect") {
-    ops.push(rotateOp(colorRectOp(x, y, width, height, fill, stroke, strokeWidth), x, y, raw.angle));
+    ops.push(rotateCenterOp(colorRectOp(x, y, width, height, fill, stroke, strokeWidth), x, y, width, height, raw.angle));
   } else if (type === "circle") {
-    ops.push(rotateOp(colorCircleOp(x, y, Math.max(1, Math.min(width, height) / 2), fill, stroke, strokeWidth), x, y, raw.angle));
+    ops.push(rotateCenterOp(colorCircleOp(x, y, Math.max(1, Math.min(width, height) / 2), fill, stroke, strokeWidth), x, y, width, height, raw.angle));
   } else if (type === "triangle") {
-    ops.push(rotateOp(colorTriangleOp(x, y, width, height, fill, stroke, strokeWidth), x, y, raw.angle));
+    ops.push(rotateCenterOp(colorTriangleOp(x, y, width, height, fill, stroke, strokeWidth), x, y, width, height, raw.angle));
   } else if (type === "group" && Array.isArray(raw.objects)) {
     raw.objects.forEach((child: any) => {
       const childWidth = Math.max(1, Number(child.width || 40) * Number(child.scaleX ?? 1) * metrics.scaleX);
@@ -312,7 +340,7 @@ function drawFieldObject(field: any, data: Record<string, unknown>, metrics: any
     if (image) {
       const name = `Im${images.length + 1}`;
       images.push({ name, ...image });
-      ops.push(rotateOp(imageOp(name, x, y, width, height), x, y, raw.angle));
+      ops.push(rotateCenterOp(imageOp(name, x, y, width, height), x, y, width, height, raw.angle));
     }
   }
 
@@ -378,6 +406,18 @@ async function saveInvoicePdf(buffer: Buffer, invoiceNumber: string) {
 function invoiceData(input: any) {
   const firstItem = Array.isArray(input.items) ? input.items[0] || {} : {};
   const formatCurrency = (value: unknown) => `${input.currency || "Rs."} ${Number(value || 0).toFixed(2)}`;
+  const convenienceCharge = Number(input.convenienceCharge || 0);
+  const convenienceChargeGst = Number(input.convenienceChargeGst || 0);
+  const totalCharges = convenienceCharge + convenienceChargeGst;
+  const configuredChargeGstPercent = Number(input.taxDetails?.convenienceChargeGstPercent ?? 0);
+  const derivedChargeGstPercent = convenienceCharge > 0 && convenienceChargeGst > 0
+    ? (convenienceChargeGst / convenienceCharge) * 100
+    : 0;
+  const displayChargeGstPercent = configuredChargeGstPercent > 0
+    ? configuredChargeGstPercent
+    : Math.abs(derivedChargeGstPercent - Math.round(derivedChargeGstPercent)) < 0.1
+      ? Math.round(derivedChargeGstPercent)
+      : Number(derivedChargeGstPercent.toFixed(2));
   return {
     invoiceNumber: input.invoiceNumber,
     issuedAt: new Date(input.issuedAt || input.invoiceDate).toLocaleDateString("en-IN"),
@@ -391,9 +431,16 @@ function invoiceData(input: any) {
     planName: input.planName || input.planId,
     productDescription: firstItem.description || "Premium subscription purchase",
     quantity: firstItem.quantity || 1,
+    planAmount: formatCurrency(input.subtotal ?? firstItem.price ?? input.amount),
     baseAmount: formatCurrency(input.subtotal ?? firstItem.price ?? input.amount),
     discountAmount: formatCurrency(input.discountTotal || 0),
+    taxPercent: Number(input.taxDetails?.taxPercent ?? input.items?.[0]?.tax ?? 0),
     taxAmount: formatCurrency(input.taxTotal || 0),
+    convenienceCharge: formatCurrency(convenienceCharge),
+    convenienceChargeGstPercent: displayChargeGstPercent,
+    convenienceChargeGst: formatCurrency(convenienceChargeGst),
+    totalCharges: formatCurrency(totalCharges),
+    finalAmount: formatCurrency(input.grandTotal || input.amount),
     amount: formatCurrency(input.amount || input.grandTotal),
     totalAmount: formatCurrency(input.grandTotal || input.amount),
     currency: input.currency || "INR",
@@ -468,7 +515,9 @@ export async function renderInvoicePdf(invoice: any, settings: any, extras: Reco
     textOp(`Subtotal: ${data.baseAmount}`, 344, 246, 9),
     textOp(`Discount: ${data.discountAmount}`, 344, 263, 9),
     textOp(`Tax: ${data.taxAmount}`, 344, 280, 9),
-    textOp(`Total: ${data.totalAmount}`, 344, 300, 11),
+    textOp(`Convenience: ${data.convenienceCharge}`, 344, 297, 9),
+    textOp(`GST on Charges: ${data.convenienceChargeGst}`, 344, 314, 9),
+    textOp(`Total: ${data.totalAmount}`, 344, 334, 11),
     textOp(String(effectiveSettings.productDetailsTitle || "Product Details"), 42, 348, 13),
     fillRectOp(42, 362, 511, 24, 0.92),
     textOp("Item", 54, 378, 9),
@@ -522,6 +571,17 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
 
   const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${String(Date.now()).slice(-6)}`;
   const template = activeTemplate(settings);
+  const subtotal = Number(subscription.baseAmount || subscription.amount || 0);
+  const discountTotal = Number(subscription.discountAmount || 0);
+  const taxPercent = Number(subscription.taxPercent ?? settings.defaultTaxPercent ?? 0);
+  const taxableAmount = Math.max(0, subtotal - discountTotal);
+  const taxTotal = Number(subscription.taxAmount ?? Math.round(((taxableAmount * taxPercent) / 100) * 100) / 100);
+  const amountBeforeCharges = Number(subscription.amountBeforeCharges ?? Math.round((taxableAmount + taxTotal) * 100) / 100);
+  const convenienceChargePercent = Number(subscription.convenienceChargePercent ?? settings.defaultConvenienceChargePercent ?? 0);
+  const convenienceCharge = Number(subscription.convenienceCharge ?? Math.round(((amountBeforeCharges * convenienceChargePercent) / 100) * 100) / 100);
+  const convenienceChargeGstPercent = Number(subscription.convenienceChargeGstPercent ?? settings.defaultConvenienceChargeGstPercent ?? 0);
+  const convenienceChargeGst = Number(subscription.convenienceChargeGst ?? Math.floor(((convenienceCharge * convenienceChargeGstPercent) / 100) * 100) / 100);
+  const grandTotal = Number(subscription.finalAmount ?? subscription.amount ?? Math.round((amountBeforeCharges + convenienceCharge + convenienceChargeGst) * 100) / 100);
   const invoice = await Invoice.create({
     invoiceNumber,
     userId: subscription.userId,
@@ -536,12 +596,23 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
       phone: user?.mobile || "",
       address: user?.address || "",
     },
-    amount: Number(subscription.amount || 0),
-    subtotal: Number(subscription.baseAmount || subscription.amount || 0),
-    discountTotal: Number(subscription.discountAmount || 0),
-    grandTotal: Number(subscription.amount || 0),
-    currency: "INR",
+    amount: grandTotal,
+    subtotal,
+    discountTotal,
+    taxTotal,
+    convenienceCharge,
+    convenienceChargeGst,
+    grandTotal,
+    currency: subscription.currency || "INR",
     status: "paid",
+    taxDetails: {
+      type: "GST",
+      taxPercent,
+      taxableAmount,
+      amountBeforeCharges,
+      convenienceChargePercent,
+      convenienceChargeGstPercent,
+    },
     templateId: template?.id || settings.activeTemplateId || "",
     templateName: template?.name || settings.activeTemplateName || "",
     transactionId: subscription.razorpayPaymentId || subscription.razorpayOrderId || "",
@@ -551,22 +622,27 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
       product: plan?.name || subscription.planId,
       description: "Premium subscription purchase",
       quantity: 1,
-      price: Number(subscription.baseAmount || subscription.amount || 0),
-      discount: Number(subscription.discountAmount || 0),
-      tax: 0,
-      total: Number(subscription.amount || 0),
+      price: subtotal,
+      discount: discountTotal,
+      tax: taxPercent,
+      total: amountBeforeCharges,
     }],
     emailStatus: "pending",
     issuedAt: new Date(),
     paymentHistory: [{
       status: "paid",
-      amount: Number(subscription.amount || 0),
+      amount: grandTotal,
       transactionId: subscription.razorpayPaymentId || subscription.razorpayOrderId || "",
-      paidAt: new Date(),
+      paidAt: subscription.transactionDate || new Date(),
       note: "Subscription payment received",
+      razorpayOrderId: subscription.razorpayOrderId || "",
+      razorpayPaymentId: subscription.razorpayPaymentId || "",
+      convenienceCharge,
+      convenienceChargeGst,
     }],
     activityLogs: [{ action: "created", message: "Invoice generated from purchase", at: new Date() }],
   });
+  logger.info({ invoiceNumber, subscriptionId, amount: grandTotal, taxTotal, discountTotal }, "Invoice generated");
 
   const data = invoiceData({ ...invoice.toJSON(), userMobile: user?.mobile || "", planName: plan?.name, paidStampText: settings.paidStampText });
   const pdf = await regenerateInvoicePdf(invoice, settings, { userMobile: user?.mobile || "", planName: plan?.name });
@@ -578,22 +654,25 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
         smtp: settings.smtp || {},
         to: invoice.userEmail,
         subject: `Invoice ${invoice.invoiceNumber} from ${settings.companyName}`,
-        text: `Hi ${invoice.userName || "Learner"},\n\nYour purchase invoice is attached.\n\nInvoice: ${invoice.invoiceNumber}\nProduct: ${data.planName}\nAmount: ${data.totalAmount}\nPayment Status: ${data.paymentStatus}\nTransaction ID: ${data.transactionId || "-"}\n\n${settings.companyName}`,
+        text: `Hi ${invoice.userName || "Learner"},\n\nYour payment was successful and your invoice PDF is attached.\n\nInvoice: ${invoice.invoiceNumber}\nProduct: ${data.planName}\nPlan Amount: ${data.baseAmount}\nDiscount: ${data.discountAmount}\nTax (${data.taxPercent}%): ${data.taxAmount}\nConvenience Charges: ${data.convenienceCharge}\nGST on Convenience Charges (${data.convenienceChargeGstPercent}%): ${data.convenienceChargeGst}\nTotal Paid: ${data.totalAmount}\nPayment Status: ${data.paymentStatus}\nRazorpay Payment ID: ${data.transactionId || "-"}\n\nFor support, contact ${settings.companyEmail || settings.smtp?.fromEmail || "support"}.\n\n${settings.companyName}`,
         attachments: [{ filename: `${invoice.invoiceNumber}.pdf`, contentType: "application/pdf", content: pdf }],
       });
       invoice.emailStatus = result.skipped ? "skipped" : "sent";
       invoice.emailError = result.skipped ? result.reason : "";
       invoice.sentAt = result.skipped ? undefined : new Date();
       await invoice.save();
+      logger.info({ invoiceNumber: invoice.invoiceNumber, to: invoice.userEmail, emailStatus: invoice.emailStatus }, "Invoice email processed");
     } catch (error) {
       invoice.emailStatus = "failed";
       invoice.emailError = error instanceof Error ? error.message : "Email failed";
       await invoice.save();
+      logger.warn({ err: error, invoiceNumber: invoice.invoiceNumber }, "Invoice email failed");
     }
   } else {
     invoice.emailStatus = "skipped";
     invoice.emailError = invoice.userEmail ? "Invoice email disabled" : "User email missing";
     await invoice.save();
+    logger.info({ invoiceNumber: invoice.invoiceNumber, reason: invoice.emailError }, "Invoice email skipped");
   }
 
   return invoice;

@@ -4,7 +4,7 @@ import mongoose from "mongoose";
 import { Coupon, Invoice, PaymentGatewaySettings, Subscription, SubscriptionPlan, User } from "@api/db";
 import { CreateOrderBody, VerifyPaymentBody } from "@api/zod";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
-import { generateInvoiceForSubscription, regenerateInvoicePdf } from "../lib/invoices";
+import { generateInvoiceForSubscription, getInvoiceSettings, regenerateInvoicePdf } from "../lib/invoices";
 
 const router: IRouter = Router();
 
@@ -98,6 +98,14 @@ function verifyRazorpaySignature(orderId: string, paymentId: string, signature: 
   return expectedBuffer.length === actualBuffer.length && crypto.timingSafeEqual(expectedBuffer, actualBuffer);
 }
 
+function roundMoney(value: number) {
+  return Math.round(Number(value || 0) * 100) / 100;
+}
+
+function floorMoney(value: number) {
+  return Math.floor(Number(value || 0) * 100) / 100;
+}
+
 async function fetchRazorpayPayment(keyId: string, keySecret: string, paymentId: string) {
   const response = await fetch(`https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}`, {
     method: "GET",
@@ -155,15 +163,40 @@ async function resolveCoupon(plan: any, couponCode?: string) {
   const mappedPlan = mapPlan(plan);
   const baseAmount = Number(mappedPlan?.price || 0);
 
+  const settings = await getInvoiceSettings();
+  const taxPercent = Math.max(0, Number(settings.defaultTaxPercent ?? 0));
+  const convenienceChargePercent = Math.max(0, Number(settings.defaultConvenienceChargePercent ?? 0));
+  const convenienceChargeGstPercent = Math.max(0, Number(settings.defaultConvenienceChargeGstPercent ?? 0));
+  const calculatePricing = (discountAmount: number, coupon: any = null) => {
+    const taxableAmount = Math.max(0, baseAmount - discountAmount);
+    const taxAmount = roundMoney((taxableAmount * taxPercent) / 100);
+    const amountBeforeCharges = roundMoney(taxableAmount + taxAmount);
+    const convenienceCharge = roundMoney((amountBeforeCharges * convenienceChargePercent) / 100);
+    const convenienceChargeGst = floorMoney((convenienceCharge * convenienceChargeGstPercent) / 100);
+    const finalAmount = roundMoney(amountBeforeCharges + convenienceCharge + convenienceChargeGst);
+    return {
+      planAmount: baseAmount,
+      baseAmount,
+      subtotal: baseAmount,
+      discountAmount,
+      taxableAmount,
+      taxPercent,
+      taxAmount,
+      amountBeforeCharges,
+      convenienceChargePercent,
+      convenienceCharge,
+      convenienceChargeGstPercent,
+      convenienceChargeGst,
+      finalAmount,
+      currency: "INR",
+      coupon,
+    };
+  };
+
   if (!normalizedCode) {
     return {
       coupon: null,
-      pricing: {
-        baseAmount,
-        discountAmount: 0,
-        finalAmount: baseAmount,
-        coupon: null,
-      },
+      pricing: calculatePricing(0),
     };
   }
 
@@ -185,21 +218,15 @@ async function resolveCoupon(plan: any, couponCode?: string) {
   }
 
   const rawDiscount = coupon.type === "percent" ? (baseAmount * Number(coupon.value)) / 100 : Number(coupon.value);
-  const discountAmount = Math.min(baseAmount, Math.max(0, Math.round(rawDiscount)));
-  const finalAmount = Math.max(0, baseAmount - discountAmount);
+  const discountAmount = Math.min(baseAmount, Math.max(0, Math.round(rawDiscount * 100) / 100));
 
   return {
     coupon,
-    pricing: {
-      baseAmount,
-      discountAmount,
-      finalAmount,
-      coupon: {
+    pricing: calculatePricing(discountAmount, {
         code: coupon.code,
         type: coupon.type,
         value: coupon.value,
-      },
-    },
+    }),
   };
 }
 
@@ -250,6 +277,13 @@ function mapInvoice(invoice: any) {
     planId: raw.planId,
     planName: raw.items?.[0]?.product || raw.planId,
     amount: raw.grandTotal ?? raw.amount,
+    subtotal: raw.subtotal ?? 0,
+    discountTotal: raw.discountTotal ?? 0,
+    taxTotal: raw.taxTotal ?? 0,
+    convenienceCharge: raw.convenienceCharge ?? 0,
+    convenienceChargeGst: raw.convenienceChargeGst ?? 0,
+    grandTotal: raw.grandTotal ?? raw.amount,
+    taxDetails: raw.taxDetails || {},
     currency: raw.currency || "INR",
     status: raw.status,
     emailStatus: raw.emailStatus,
@@ -331,11 +365,22 @@ router.post("/create-order", requireAuth, async (req: AuthenticatedRequest, res)
         couponValue: pricing.coupon?.value,
         baseAmount: pricing.baseAmount,
         discountAmount: pricing.discountAmount,
+        taxPercent: pricing.taxPercent,
+        taxAmount: pricing.taxAmount,
+        amountBeforeCharges: pricing.amountBeforeCharges,
+        convenienceChargePercent: pricing.convenienceChargePercent,
+        convenienceCharge: pricing.convenienceCharge,
+        convenienceChargeGstPercent: pricing.convenienceChargeGstPercent,
+        convenienceChargeGst: pricing.convenienceChargeGst,
+        finalAmount: pricing.finalAmount,
+        currency: pricing.currency,
         amount: pricing.finalAmount,
         status: "pending",
+        paymentStatus: "PENDING",
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
+    req.log.info({ orderId: order.id, userId: req.userId, planId: body.planId, amount: pricing.finalAmount, taxAmount: pricing.taxAmount, discountAmount: pricing.discountAmount }, "Razorpay order created and pending subscription stored");
 
     res.json({
       orderId: order.id,
@@ -356,6 +401,7 @@ router.post("/create-order", requireAuth, async (req: AuthenticatedRequest, res)
 router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const body = VerifyPaymentBody.parse(req.body);
+    req.log.info({ orderId: body.orderId, paymentId: body.paymentId, planId: body.planId, userId: req.userId }, "Payment verification received");
     const plan = await getSubscriptionPlan(body.planId);
     const gateway = await getRazorpaySettings();
     const pendingSubscription = await Subscription.findOne({
@@ -369,19 +415,39 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
       throw new Error("Matching pending Razorpay order was not found");
     }
 
-    const { coupon, pricing } = await resolveCoupon(plan, pendingSubscription.couponCode || body.couponCode);
+    const { coupon, pricing: livePricing } = await resolveCoupon(plan, pendingSubscription.couponCode || body.couponCode);
+    let pricing = {
+      ...livePricing,
+      baseAmount: Number(pendingSubscription.baseAmount ?? livePricing.baseAmount),
+      discountAmount: Number(pendingSubscription.discountAmount ?? livePricing.discountAmount),
+      taxPercent: Number(pendingSubscription.taxPercent ?? livePricing.taxPercent),
+      taxAmount: Number(pendingSubscription.taxAmount ?? livePricing.taxAmount),
+      amountBeforeCharges: Number(pendingSubscription.amountBeforeCharges ?? livePricing.amountBeforeCharges),
+      convenienceChargePercent: Number(pendingSubscription.convenienceChargePercent ?? livePricing.convenienceChargePercent),
+      convenienceCharge: Number(pendingSubscription.convenienceCharge ?? livePricing.convenienceCharge),
+      convenienceChargeGstPercent: Number(pendingSubscription.convenienceChargeGstPercent ?? livePricing.convenienceChargeGstPercent),
+      convenienceChargeGst: Number(pendingSubscription.convenienceChargeGst ?? livePricing.convenienceChargeGst),
+      finalAmount: Number(pendingSubscription.finalAmount ?? pendingSubscription.amount ?? livePricing.finalAmount),
+      currency: pendingSubscription.currency || livePricing.currency || "INR",
+    };
 
     if (!verifyRazorpaySignature(body.orderId, body.paymentId, body.signature, gateway.keySecret)) {
       pendingSubscription.status = "failed";
+      pendingSubscription.paymentStatus = "FAILED";
       pendingSubscription.razorpayPaymentId = body.paymentId;
+      pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
       throw new Error("Razorpay payment signature verification failed");
     }
 
     const razorpayOrder = await fetchRazorpayOrder(gateway.keyId, gateway.keySecret, body.orderId);
     const expectedAmount = Number(razorpayOrder.amount || 0);
+    const expectedPricingAmount = Math.round(Number(pricing.finalAmount || 0) * 100);
     if (!Number.isFinite(expectedAmount) || expectedAmount <= 0) {
       throw new Error("Unable to verify Razorpay order amount");
+    }
+    if (expectedAmount !== expectedPricingAmount) {
+      throw new Error(`Razorpay order amount does not match stored checkout amount. Order ${expectedAmount}, expected ${expectedPricingAmount}`);
     }
 
     let payment = await fetchRazorpayPayment(gateway.keyId, gateway.keySecret, body.paymentId);
@@ -389,23 +455,29 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
 
     if (String(payment.order_id || "") !== String(body.orderId)) {
       pendingSubscription.status = "failed";
+      pendingSubscription.paymentStatus = "FAILED";
       pendingSubscription.razorpayPaymentId = body.paymentId;
+      pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
       throw new Error("Razorpay payment does not belong to this order");
     }
 
     if (!Number.isFinite(paidAmount) || paidAmount <= 0) {
       pendingSubscription.status = "failed";
+      pendingSubscription.paymentStatus = "FAILED";
       pendingSubscription.razorpayPaymentId = body.paymentId;
+      pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
       throw new Error("Unable to verify Razorpay payment amount");
     }
 
     if (paidAmount < expectedAmount) {
       pendingSubscription.status = "failed";
+      pendingSubscription.paymentStatus = "FAILED";
       pendingSubscription.razorpayPaymentId = body.paymentId;
+      pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
-      throw new Error(`Razorpay payment amount is less than this order. Paid ${paidAmount}, expected ${expectedAmount}`);
+      throw new Error(`Razorpay payment amount does not match this order. Paid ${paidAmount}, expected ${expectedAmount}`);
     }
 
     if (String(payment.status || "").toLowerCase() === "authorized") {
@@ -415,44 +487,112 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
 
     if (String(payment.status || "").toLowerCase() !== "captured") {
       pendingSubscription.status = "failed";
+      pendingSubscription.paymentStatus = "FAILED";
       pendingSubscription.razorpayPaymentId = body.paymentId;
+      pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
       throw new Error(`Razorpay payment is not captured. Current status: ${payment.status || "unknown"}`);
     }
 
     if (paidAmount < expectedAmount) {
       pendingSubscription.status = "failed";
+      pendingSubscription.paymentStatus = "FAILED";
       pendingSubscription.razorpayPaymentId = body.paymentId;
+      pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
-      throw new Error(`Razorpay payment amount is less than this order. Paid ${paidAmount}, expected ${expectedAmount}`);
+      throw new Error(`Razorpay payment amount does not match this order. Paid ${paidAmount}, expected ${expectedAmount}`);
+    }
+
+    if (paidAmount > expectedAmount) {
+      const gatewayExtra = roundMoney((paidAmount - expectedAmount) / 100);
+      const reportedFee = roundMoney(Number(payment.fee || 0) / 100);
+      const reportedTax = roundMoney(Number(payment.tax || 0) / 100);
+      const extraGst = reportedTax > 0 && reportedTax <= gatewayExtra ? reportedTax : 0;
+      const extraCharge = reportedFee > 0 && reportedFee <= gatewayExtra
+        ? roundMoney(Math.max(0, reportedFee - extraGst))
+        : roundMoney(Math.max(0, gatewayExtra - extraGst));
+
+      const totalCharge = roundMoney(Number(pricing.convenienceCharge || 0) + extraCharge);
+      const totalGst = roundMoney(Number(pricing.convenienceChargeGst || 0) + extraGst);
+      const effectiveGstPercent = totalCharge > 0 && totalGst > 0 ? (totalGst / totalCharge) * 100 : 0;
+      pricing = {
+        ...pricing,
+        convenienceCharge: totalCharge,
+        convenienceChargeGst: totalGst,
+        convenienceChargeGstPercent: Number(pricing.convenienceChargeGstPercent || 0) > 0
+          ? pricing.convenienceChargeGstPercent
+          : Math.abs(effectiveGstPercent - Math.round(effectiveGstPercent)) < 0.1
+            ? Math.round(effectiveGstPercent)
+            : Number(effectiveGstPercent.toFixed(2)),
+        finalAmount: roundMoney(paidAmount / 100),
+      };
+      req.log.info({ orderId: body.orderId, paymentId: body.paymentId, expectedAmount, paidAmount, gatewayExtra, extraCharge, extraGst }, "Razorpay payment included gateway-side customer charges");
     }
 
     const expiresAt = new Date();
     expiresAt.setMonth(expiresAt.getMonth() + Number(plan.durationMonths || 0));
 
     pendingSubscription.razorpayPaymentId = body.paymentId;
+    pendingSubscription.razorpaySignature = body.signature;
+    (pendingSubscription as any).razorpayPaidAmount = paidAmount / 100;
+    (pendingSubscription as any).razorpayFeeAmount = Number(payment.fee || 0) / 100;
+    (pendingSubscription as any).razorpayTaxAmount = Number(payment.tax || 0) / 100;
     pendingSubscription.couponCode = coupon?.code;
     pendingSubscription.couponType = coupon?.type;
     pendingSubscription.couponValue = coupon?.value;
     pendingSubscription.baseAmount = pricing.baseAmount;
     pendingSubscription.discountAmount = pricing.discountAmount;
-    pendingSubscription.amount = expectedAmount / 100;
+    pendingSubscription.taxPercent = pricing.taxPercent;
+    pendingSubscription.taxAmount = pricing.taxAmount;
+    pendingSubscription.amountBeforeCharges = pricing.amountBeforeCharges;
+    pendingSubscription.convenienceChargePercent = pricing.convenienceChargePercent;
+    pendingSubscription.convenienceCharge = pricing.convenienceCharge;
+    pendingSubscription.convenienceChargeGstPercent = pricing.convenienceChargeGstPercent;
+    pendingSubscription.convenienceChargeGst = pricing.convenienceChargeGst;
+    pendingSubscription.finalAmount = pricing.finalAmount;
+    pendingSubscription.currency = pricing.currency;
+    pendingSubscription.amount = paidAmount / 100;
     pendingSubscription.status = "active";
+    pendingSubscription.paymentStatus = "PAID";
+    pendingSubscription.transactionDate = new Date();
     pendingSubscription.startDate = new Date();
     pendingSubscription.endDate = expiresAt;
     await pendingSubscription.save();
-    generateInvoiceForSubscription(String(pendingSubscription._id)).catch((err) =>
-      req.log.error({ err }, "Automatic invoice generation failed"),
-    );
+    req.log.info({ subscriptionId: String(pendingSubscription._id), paymentId: body.paymentId, amount: pendingSubscription.amount }, "Payment verified and subscription updated");
+    let invoice = null;
+    try {
+      invoice = await generateInvoiceForSubscription(String(pendingSubscription._id));
+      req.log.info({ subscriptionId: String(pendingSubscription._id), invoiceId: String(invoice._id), invoiceNumber: invoice.invoiceNumber }, "Invoice generated after payment");
+    } catch (err) {
+      req.log.error({ err, subscriptionId: String(pendingSubscription._id) }, "Automatic invoice generation failed");
+    }
 
     if (coupon) {
       coupon.usedCount = Number(coupon.usedCount || 0) + 1;
       await coupon.save();
     }
 
-    await User.findByIdAndUpdate(req.userId, { isPremium: true, premiumExpiresAt: expiresAt });
+    await User.findByIdAndUpdate(req.userId, {
+      isPremium: true,
+      premiumExpiresAt: expiresAt,
+      lastPurchase: {
+        subscriptionId: String(pendingSubscription._id),
+        planId: String(pendingSubscription.planId || ""),
+        planAmount: pricing.baseAmount,
+        discountAmount: pricing.discountAmount,
+        taxAmount: pricing.taxAmount,
+        convenienceCharge: pricing.convenienceCharge,
+        convenienceChargeGst: pricing.convenienceChargeGst,
+        finalAmount: pricing.finalAmount,
+        currency: pricing.currency,
+        razorpayOrderId: body.orderId,
+        razorpayPaymentId: body.paymentId,
+        paymentStatus: "PAID",
+        transactionDate: pendingSubscription.transactionDate,
+      },
+    });
 
-    res.json({ isPremium: true, expiresAt: expiresAt.toISOString(), plan: plan.name, pricing });
+    res.json({ isPremium: true, expiresAt: expiresAt.toISOString(), plan: plan.name, pricing, invoice: invoice ? { id: String(invoice._id), invoiceNumber: invoice.invoiceNumber, emailStatus: invoice.emailStatus } : null });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Payment verification failed";
     req.log.error({ err: error, message }, "Verify payment failed");

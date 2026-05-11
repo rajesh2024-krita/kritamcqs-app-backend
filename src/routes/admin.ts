@@ -2057,6 +2057,9 @@ router.post("/invoice-settings", wrap(async (req, res) => {
   existing.footerText = String(body.footerText ?? existing.footerText ?? "");
   existing.productDetailsTitle = String(body.productDetailsTitle ?? existing.productDetailsTitle ?? "Product Details");
   existing.paidStampText = String(body.paidStampText ?? existing.paidStampText ?? "PAID");
+  existing.defaultTaxPercent = Math.max(0, Math.min(100, Number(body.defaultTaxPercent ?? existing.defaultTaxPercent ?? 0)));
+  existing.defaultConvenienceChargePercent = Math.max(0, Math.min(100, Number(body.defaultConvenienceChargePercent ?? existing.defaultConvenienceChargePercent ?? 0)));
+  existing.defaultConvenienceChargeGstPercent = Math.max(0, Math.min(100, Number(body.defaultConvenienceChargeGstPercent ?? existing.defaultConvenienceChargeGstPercent ?? 0)));
   const normalizeFields = (fields: any[] = []) => fields.map((field: any) => ({
       ...field,
       id: String(field.id ?? `field-${Date.now()}`),
@@ -2135,6 +2138,17 @@ router.post("/invoice-settings/test-invoice", wrap(async (req, res) => {
   const to = String(req.body?.to || settings.companyEmail || settings.smtp?.fromEmail || "").trim();
   if (!to) throw Object.assign(new Error("Test recipient email is required"), { statusCode: 400 });
   const now = new Date();
+  const testSubtotal = 1000;
+  const testDiscount = 100;
+  const testTaxPercent = Number(settings.defaultTaxPercent ?? 0);
+  const testConveniencePercent = Number(settings.defaultConvenienceChargePercent ?? 0);
+  const testConvenienceGstPercent = Number(settings.defaultConvenienceChargeGstPercent ?? 0);
+  const testTaxable = Math.max(0, testSubtotal - testDiscount);
+  const testTax = Math.round(((testTaxable * testTaxPercent) / 100) * 100) / 100;
+  const testAmountBeforeCharges = Math.round((testTaxable + testTax) * 100) / 100;
+  const testConvenience = Math.round(((testAmountBeforeCharges * testConveniencePercent) / 100) * 100) / 100;
+  const testConvenienceGst = Math.floor(((testConvenience * testConvenienceGstPercent) / 100) * 100) / 100;
+  const testGrandTotal = Math.round((testAmountBeforeCharges + testConvenience + testConvenienceGst) * 100) / 100;
   const sampleInvoice = {
     invoiceNumber: `TEST-${now.toISOString().slice(0, 10).replace(/-/g, "")}`,
     userName: "Test Customer",
@@ -2153,21 +2167,23 @@ router.post("/invoice-settings/test-invoice", wrap(async (req, res) => {
     invoiceDate: now,
     dueDate: now,
     transactionId: "test_txn_123456",
-    subtotal: 1000,
-    discountTotal: 100,
-    taxTotal: 162,
-    grandTotal: 1062,
-    amount: 1062,
+    subtotal: testSubtotal,
+    discountTotal: testDiscount,
+    taxTotal: testTax,
+    convenienceCharge: testConvenience,
+    convenienceChargeGst: testConvenienceGst,
+    grandTotal: testGrandTotal,
+    amount: testGrandTotal,
     notes: "This is a test invoice generated for template and email verification.",
     terms: "No payment is required for this test invoice.",
     items: [{
       product: "Premium Subscription",
       description: "Template test item",
       quantity: 1,
-      price: 1000,
-      discount: 100,
-      tax: 18,
-      total: 1062,
+      price: testSubtotal,
+      discount: testDiscount,
+      tax: testTaxPercent,
+      total: testAmountBeforeCharges,
     }],
   };
   const pdf = await renderInvoicePdf(sampleInvoice, settings, { planName: "Premium Plan" });

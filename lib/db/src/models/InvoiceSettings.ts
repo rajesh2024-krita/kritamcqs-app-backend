@@ -14,6 +14,9 @@ export interface IInvoiceSettings extends Document {
   footerText: string;
   productDetailsTitle: string;
   paidStampText: string;
+  defaultTaxPercent?: number;
+  defaultConvenienceChargePercent?: number;
+  defaultConvenienceChargeGstPercent?: number;
   fields: Array<{ id: string; label: string; x: number; y: number; size: number; enabled: boolean }>;
   activeTemplateId?: string;
   activeTemplateName?: string;
@@ -69,6 +72,9 @@ const invoiceSettingsSchema = new Schema<IInvoiceSettings>(
     footerText: { type: String, default: "This is a computer-generated invoice." },
     productDetailsTitle: { type: String, default: "Product Details" },
     paidStampText: { type: String, default: "PAID" },
+    defaultTaxPercent: { type: Number, default: 0, min: 0, max: 100 },
+    defaultConvenienceChargePercent: { type: Number, default: 0, min: 0, max: 100 },
+    defaultConvenienceChargeGstPercent: { type: Number, default: 0, min: 0, max: 100 },
     fields: { type: [fieldSchema], default: [] },
     activeTemplateId: { type: String, default: "" },
     activeTemplateName: { type: String, default: "" },
