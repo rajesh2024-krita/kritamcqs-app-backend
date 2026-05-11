@@ -12,11 +12,12 @@ import {
   RevisionSettings,
   SessionAttempt,
   Subject,
+  Topic,
 } from "@api/db";
 import { z } from "zod";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
-import { createLearningSession, getSessionAttemptNumber, updateDailyAssignmentProgress } from "../lib/learning";
+import { createLearningSession, getSessionAttemptNumber } from "../lib/learning";
 import { normalizeQuestionDocument } from "../lib/question-framework";
 import { getQuestionExamModes } from "../lib/subjects";
 
@@ -51,6 +52,21 @@ async function getRevisionConfig() {
     wrongQuestionLimit: Math.max(1, Number(settings.wrongQuestionLimit ?? DEFAULT_REVISION_CONFIG.wrongQuestionLimit)),
     oldQuestionLimit: Math.max(1, Number(settings.oldQuestionLimit ?? DEFAULT_REVISION_CONFIG.oldQuestionLimit)),
     revisionEnabled: settings.revisionEnabled !== false,
+  };
+}
+
+async function normalizeQuestionWithNames(question: any) {
+  const [subject, chapter, topic] = await Promise.all([
+    question.subjectId ? Subject.findById(question.subjectId) : Promise.resolve(null),
+    question.chapterId ? Chapter.findById(question.chapterId) : Promise.resolve(null),
+    question.topicId ? Topic.findById(question.topicId) : Promise.resolve(null),
+  ]);
+
+  return {
+    ...normalizeQuestionDocument(question),
+    subjectName: subject?.name ?? "Unknown",
+    chapterName: chapter?.name ?? "Unknown",
+    topicName: topic?.name ?? "General",
   };
 }
 
@@ -200,12 +216,18 @@ router.get("/revision", requireAuth, requireOnboardingComplete, async (req: Auth
     title: `${examMode} Revision Session`,
   });
 
+  const [wrongQuestions, oldQuestions, questions] = await Promise.all([
+    Promise.all(revisionSet.wrongQuestions.map((question: any) => normalizeQuestionWithNames(question))),
+    Promise.all(revisionSet.oldCorrectQuestions.map((question: any) => normalizeQuestionWithNames(question))),
+    Promise.all(revisionSet.questions.map((question: any) => normalizeQuestionWithNames(question))),
+  ]);
+
   res.json({
     sessionId: session.id,
     origin: "revision",
-    wrongQuestions: revisionSet.wrongQuestions.map((question: any) => normalizeQuestionDocument(question)),
-    oldQuestions: revisionSet.oldCorrectQuestions.map((question: any) => normalizeQuestionDocument(question)),
-    questions: revisionSet.questions.map((question: any) => normalizeQuestionDocument(question)),
+    wrongQuestions,
+    oldQuestions,
+    questions,
     wrongCount: revisionSet.wrongQuestions.length,
     oldCount: revisionSet.oldCorrectQuestions.length,
     totalCount: revisionSet.totalCount,
@@ -434,11 +456,6 @@ router.post("/revision/submit", requireAuth, requireOnboardingComplete, async (r
       completedAt: new Date(),
     }).save();
 
-    await updateDailyAssignmentProgress(
-      userId,
-      questionAttemptDocs.map((item) => String(item.questionId)),
-    );
-
     res.json({
       sessionId: session.id,
       attemptId: sessionAttempt.id,
@@ -463,10 +480,14 @@ router.get("/revision/today", requireAuth, requireOnboardingComplete, async (req
   const userId = req.userId!;
   const examMode = (user.examMode ?? "NEET") as "NEET" | "JEE" | "BOTH";
   const revisionSet = await buildRevisionSet(userId, examMode);
+  const [wrongQuestions, oldCorrectQuestions] = await Promise.all([
+    Promise.all(revisionSet.wrongQuestions.map((question: any) => normalizeQuestionWithNames(question))),
+    Promise.all(revisionSet.oldCorrectQuestions.map((question: any) => normalizeQuestionWithNames(question))),
+  ]);
 
   res.json({
-    wrongQuestions: revisionSet.wrongQuestions.map((question: any) => normalizeQuestionDocument(question)),
-    oldCorrectQuestions: revisionSet.oldCorrectQuestions.map((question: any) => normalizeQuestionDocument(question)),
+    wrongQuestions,
+    oldCorrectQuestions,
     totalCount: revisionSet.totalCount,
     configuredTotalCount: revisionSet.config.wrongQuestionLimit + revisionSet.config.oldQuestionLimit,
     enabled: revisionSet.enabled,
@@ -490,9 +511,10 @@ router.get("/mistakes", requireAuth, requireOnboardingComplete, async (req: Auth
 
       if (subjectId && String(question.subjectId) !== String(subjectId)) return null;
 
-      const [subject, chapter, latestAttempt] = await Promise.all([
+      const [subject, chapter, topic, latestAttempt] = await Promise.all([
         Subject.findById(question.subjectId),
         Chapter.findById(question.chapterId),
+        question.topicId ? Topic.findById(question.topicId) : Promise.resolve(null),
         QuestionAttempt.findOne({ userId, questionId: String(question._id) }).sort({ createdAt: -1 }),
       ]);
 
@@ -502,6 +524,7 @@ router.get("/mistakes", requireAuth, requireOnboardingComplete, async (req: Auth
           ...normalizeQuestionDocument(question),
           subjectName: subject?.name ?? "Unknown",
           chapterName: chapter?.name ?? "Unknown",
+          topicName: topic?.name ?? "General",
         },
         status: mistake.status,
         attempts: mistake.attempts,
@@ -510,6 +533,8 @@ router.get("/mistakes", requireAuth, requireOnboardingComplete, async (req: Auth
         subjectName: subject?.name ?? "Unknown",
         chapterId: String(question.chapterId),
         chapterName: chapter?.name ?? "Unknown",
+        topicId: String(question.topicId ?? ""),
+        topicName: topic?.name ?? "General",
         selectedOption: latestAttempt?.selectedOption,
         selectedOptions: latestAttempt?.selectedOptions ?? [],
         numericAnswer: latestAttempt?.numericAnswer,

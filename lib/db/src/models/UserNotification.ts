@@ -8,7 +8,18 @@ export interface IUserNotification extends Document {
   body: string;
   dedupeKey: string;
   visibleInApp: boolean;
+  linkUrl?: string;
+  imageUrl?: string;
+  attachmentUrl?: string;
+  attachmentName?: string;
+  targetGroup?: string;
+  deliveryMode?: string;
+  notificationStatus?: string;
+  senderId?: string;
+  senderName?: string;
   emailStatus?: string;
+  emailError?: string;
+  sentAt?: Date;
   readAt?: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -22,7 +33,18 @@ const userNotificationSchema = new Schema<IUserNotification>(
     body: { type: String, required: true },
     dedupeKey: { type: String, required: true, unique: true, index: true },
     visibleInApp: { type: Boolean, default: true, index: true },
+    linkUrl: { type: String, default: "" },
+    imageUrl: { type: String, default: "" },
+    attachmentUrl: { type: String, default: "" },
+    attachmentName: { type: String, default: "" },
+    targetGroup: { type: String, default: "", index: true },
+    deliveryMode: { type: String, default: "notification" },
+    notificationStatus: { type: String, default: "pending", index: true },
+    senderId: { type: String, default: "" },
+    senderName: { type: String, default: "" },
     emailStatus: { type: String, default: "" },
+    emailError: { type: String, default: "" },
+    sentAt: Date,
     readAt: Date,
   },
   {

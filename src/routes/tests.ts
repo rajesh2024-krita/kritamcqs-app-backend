@@ -294,24 +294,26 @@ router.post("/generate", requireAuth, requireOnboardingComplete, async (req: Aut
     const body = GenerateSessionBody.parse(req.body);
     const userId = req.userId!;
     const user = req.user!;
-    const remainingForFree = Math.max(0, 20 - (await getQuestionsAttemptedToday(userId)));
+    const hasExplicitSelection = Boolean(body.chapterIds?.length || body.subjectIds?.length);
+    const shouldUseDailySet = !user.isPremium && !hasExplicitSelection && body.mode !== "revision";
+    const remainingForFree = shouldUseDailySet ? Math.max(0, 20 - (await getQuestionsAttemptedToday(userId))) : null;
 
-    if (!user.isPremium && remainingForFree <= 0) {
+    if (shouldUseDailySet && Number(remainingForFree) <= 0) {
       res.status(403).json({
         error: "daily_limit_reached",
-        message: "You've reached today's 20-question free limit. Unlock unlimited practice.",
+        message: "You've reached today's daily-test limit. Free practice chapters are still available from Practice.",
       });
       return;
     }
 
-    const limit = user.isPremium ? (body.questionCount ?? 20) : Math.min(remainingForFree, 20);
+    const requestedCount = Math.max(1, Math.min(200, Number(body.questionCount ?? 20)));
+    const limit = shouldUseDailySet ? Math.max(1, Math.min(Number(remainingForFree), requestedCount)) : requestedCount;
     const requestedExamMode =
       body.examPattern === "MIXED" || body.examPattern === "BOTH"
         ? "BOTH"
         : body.examPattern ?? user.examMode ?? "NEET";
     const examModes = getQuestionExamModes(requestedExamMode);
     const examMatch = { examMode: examModes.length === 1 ? examModes[0] : { $in: examModes } };
-    const hasExplicitSelection = Boolean(body.chapterIds?.length || body.subjectIds?.length);
     const adaptiveConfig = await getAdaptiveTestConfig();
     const performanceProfile = await evaluateUserPerformanceTier(userId);
     const adaptiveRatio = getAdaptiveRatio(adaptiveConfig, performanceProfile.tier);
@@ -322,7 +324,7 @@ router.post("/generate", requireAuth, requireOnboardingComplete, async (req: Aut
     let title = body.mode === "smart" ? `${requestedExamMode} Smart Test` : "Practice Session";
     let allowedChapterIds: string[] | undefined = undefined;
 
-    if (!user.isPremium && !hasExplicitSelection && body.mode !== "revision") {
+    if (shouldUseDailySet) {
       const assignment = await getOrCreateDailyAssignment(user);
       const assignmentQuestions = await Question.find({ _id: { $in: assignment.questionIds } }).populate("questionTypeId");
       questions = assignmentQuestions.slice(0, limit);
@@ -735,7 +737,9 @@ router.post("/:testId/submit", requireAuth, requireOnboardingComplete, async (re
       );
     }
 
-    await updateDailyAssignmentProgress(userId, questionAttemptDocs.map((item) => String(item.questionId)));
+    if (session.origin === "daily_set") {
+      await updateDailyAssignmentProgress(userId, questionAttemptDocs.map((item) => String(item.questionId)));
+    }
 
     res.json({
       sessionId: session.id,

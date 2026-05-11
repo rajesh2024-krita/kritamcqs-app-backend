@@ -18,6 +18,7 @@ import testsRouter from "./tests";
 import mockTestsRouter from "./mock-tests";
 import revisionRouter from "./revision";
 import subscriptionRouter from "./subscription";
+import supportRouter from "./support";
 import adminRouter from "./admin";
 import adminAuthRouter from "./admin-auth";
 
@@ -42,6 +43,7 @@ router.use("/tests", testsRouter);
 router.use("/mock-tests", mockTestsRouter);
 router.use(revisionRouter);
 router.use("/subscription", subscriptionRouter);
+router.use("/support", supportRouter);
 router.use("/admin-auth", adminAuthRouter);
 router.use("/admin", adminRouter);
 

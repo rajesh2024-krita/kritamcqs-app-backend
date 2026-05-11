@@ -3,6 +3,7 @@ import {
   User,
   ChapterPerformance,
   DailyAssignment,
+  ExamMarkingSettings,
   LearningSession,
   SessionAttempt,
   Subject,
@@ -113,8 +114,17 @@ function getPredictionBandFromRatio(ratio: number) {
   return "Needs Improvement";
 }
 
-async function buildNotifications(user: any, userId: string, revisionPendingCount: number, weakTopicsCount: number, remainingToday: number | null) {
-  const notifications: Array<{ id: string; title: string; body: string; type: string; createdAt: string }> = [];
+async function buildNotifications(
+  user: any,
+  userId: string,
+  revisionPendingCount: number,
+  weakTopicsCount: number,
+  remainingToday: number | null,
+  options: { page?: number; limit?: number; type?: string; status?: string; date?: string } = {},
+) {
+  const page = Math.max(1, Number(options.page || 1));
+  const limit = Math.min(50, Math.max(1, Number(options.limit || 20)));
+  const notifications: Array<{ id: string; title: string; body: string; type: string; createdAt: string; isRead: boolean; linkUrl: string }> = [];
 
   if (!user.isPremium) {
     notifications.push({
@@ -123,6 +133,8 @@ async function buildNotifications(user: any, userId: string, revisionPendingCoun
       body: `${remainingToday ?? 0} questions remaining in today's free plan quota.`,
       type: "practice",
       createdAt: new Date().toISOString(),
+      isRead: true,
+      linkUrl: "/daily-test",
     });
   }
 
@@ -133,6 +145,8 @@ async function buildNotifications(user: any, userId: string, revisionPendingCoun
       body: `${weakTopicsCount} weak chapters are ready for focused practice.`,
       type: "weak_area",
       createdAt: new Date().toISOString(),
+      isRead: true,
+      linkUrl: "/weak-areas",
     });
   }
 
@@ -143,6 +157,8 @@ async function buildNotifications(user: any, userId: string, revisionPendingCoun
       body: `${revisionPendingCount} revision questions are available for today.`,
       type: "revision",
       createdAt: new Date().toISOString(),
+      isRead: true,
+      linkUrl: "/revision",
     });
   }
 
@@ -156,6 +172,8 @@ async function buildNotifications(user: any, userId: string, revisionPendingCoun
         body: `Your premium plan expires in ${daysLeft} day${daysLeft === 1 ? "" : "s"}. Renew to keep unlimited access.`,
         type: "subscription",
         createdAt: new Date().toISOString(),
+        isRead: true,
+        linkUrl: "/subscription",
       });
     }
   }
@@ -168,20 +186,76 @@ async function buildNotifications(user: any, userId: string, revisionPendingCoun
       body: `Your latest score is ${latestAttempt.score ?? 0} with ${Math.round(latestAttempt.accuracy ?? 0)}% accuracy.`,
       type: "result",
       createdAt: (latestAttempt.completedAt ?? latestAttempt.createdAt).toISOString(),
+      isRead: true,
+      linkUrl: "/test-results",
     });
   }
 
-  const storedNotifications = await UserNotification.find({ userId, visibleInApp: { $ne: false } }).sort({ createdAt: -1 }).limit(20);
-  return [
-    ...storedNotifications.map((item: any) => ({
+  const storedFilter = { userId, visibleInApp: { $ne: false } };
+  const typeFilter = String(options.type || "").trim();
+  const statusFilter = String(options.status || "").trim();
+  const dateFilter = String(options.date || "").trim();
+  if (typeFilter && typeFilter !== "all") {
+    (storedFilter as any).type = typeFilter;
+  }
+  if (statusFilter === "read") {
+    (storedFilter as any).readAt = { $exists: true };
+  }
+  if (statusFilter === "unread") {
+    (storedFilter as any).readAt = { $exists: false };
+  }
+  if (dateFilter) {
+    const start = new Date(dateFilter);
+    if (!Number.isNaN(start.getTime())) {
+      start.setHours(0, 0, 0, 0);
+      const end = new Date(start);
+      end.setDate(end.getDate() + 1);
+      (storedFilter as any).createdAt = { $gte: start, $lt: end };
+    }
+  }
+  const [storedNotifications, storedTotal, storedUnread] = await Promise.all([
+    UserNotification.find(storedFilter)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit),
+    UserNotification.countDocuments(storedFilter),
+    UserNotification.countDocuments({ ...storedFilter, readAt: { $exists: false } }),
+  ]);
+
+  return {
+    items: [
+      ...storedNotifications.map((item: any) => ({
       id: item.id,
       title: item.title,
       body: item.body,
       type: item.type,
+      isRead: Boolean(item.readAt),
+      linkUrl: item.linkUrl || notificationLinkForType(item.type),
+      imageUrl: item.imageUrl || "",
+      attachmentUrl: item.attachmentUrl || "",
+      attachmentName: item.attachmentName || "",
+      senderName: item.senderName || "Admin",
+      emailStatus: item.emailStatus || "",
+      notificationStatus: item.notificationStatus || "",
       createdAt: item.createdAt.toISOString(),
-    })),
-    ...notifications,
-  ];
+      })),
+      ...(page === 1 ? notifications : []),
+    ],
+    unreadCount: storedUnread,
+    total: storedTotal + (page === 1 ? notifications.length : 0),
+    meta: { page, limit, total: storedTotal, pages: Math.max(1, Math.ceil(storedTotal / limit)) },
+  };
+}
+
+function notificationLinkForType(type: string) {
+  const normalized = String(type || "").toLowerCase();
+  if (normalized.includes("offer") || normalized.includes("subscription")) return "/subscription";
+  if (normalized.includes("weak")) return "/weak-areas";
+  if (normalized.includes("revision")) return "/revision";
+  if (normalized.includes("result") || normalized.includes("mock")) return "/test-results";
+  if (normalized.includes("support")) return "/help-support";
+  if (normalized.includes("practice")) return "/practice";
+  return "/notifications";
 }
 
 async function getConfiguredRevisionLimit() {
@@ -249,7 +323,7 @@ router.get("/me", requireAuth, async (req: AuthenticatedRequest, res) => {
   res.json({
     ...userResponse(user),
     ...daily,
-    notificationCount: notifications.length,
+    notificationCount: notifications.unreadCount,
     modeMetadata: user.examMode
       ? {
           key: user.examMode,
@@ -327,24 +401,36 @@ router.post("/preferences", requireAuth, async (req: AuthenticatedRequest, res) 
 
 router.get("/stats", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   const userId = req.userId!;
-  const [attempts, weakAreas, user, assignment, attemptedToday, latestActivitySummary, eligibleSubjects, chapterAttemptSummary, configuredRevisionLimit] = await Promise.all([
-    SessionAttempt.find({ userId, completedAt: { $ne: null } }),
-    ChapterPerformance.find({ userId, isWeak: true }),
-    User.findById(userId),
-    DailyAssignment.findOne({ userId, dateKey: new Date().toISOString().slice(0, 10) }),
-    getQuestionsAttemptedToday(userId),
-    getLatestActivitySummary(userId),
-    Subject.find(
-      !req.user?.examMode || req.user.examMode === "BOTH"
-        ? {}
-        : { $or: [{ examMode: req.user.examMode }, { examMode: "BOTH" }] },
-    ),
-    ChapterPerformance.aggregate([
-      { $match: { userId } },
-      { $group: { _id: null, totalChapterAttempts: { $sum: "$totalAttempts" } } },
-    ]),
-    getConfiguredRevisionLimit(),
-  ]);
+  const [
+    attempts,
+    weakAreas,
+    user,
+    assignment,
+    attemptedToday,
+    latestActivitySummary,
+    eligibleSubjects,
+    chapterAttemptSummary,
+    configuredRevisionLimit,
+    markingSettings,
+  ] = await Promise.all([
+      SessionAttempt.find({ userId, completedAt: { $ne: null } }),
+      ChapterPerformance.find({ userId, isWeak: true }),
+      User.findById(userId),
+      DailyAssignment.findOne({ userId, dateKey: new Date().toISOString().slice(0, 10) }),
+      getQuestionsAttemptedToday(userId),
+      getLatestActivitySummary(userId),
+      Subject.find(
+        !req.user?.examMode || req.user.examMode === "BOTH"
+          ? {}
+          : { $or: [{ examMode: req.user.examMode }, { examMode: "BOTH" }] },
+      ),
+      ChapterPerformance.aggregate([
+        { $match: { userId } },
+        { $group: { _id: null, totalChapterAttempts: { $sum: "$totalAttempts" } } },
+      ]),
+      getConfiguredRevisionLimit(),
+      ExamMarkingSettings.findOne({}),
+    ]);
 
   const totalTests = attempts.length;
   const totalAttempts = attempts.length;
@@ -405,8 +491,12 @@ router.get("/stats", requireAuth, requireOnboardingComplete, async (req: Authent
         : latestMockMaxScore > 0
           ? latestMockMaxScore
           : 720;
-  const predictedScore = Math.round(predictedMaxScore * mockPerformanceRatio);
-  const predictionRange = mockPredictionHistory.length > 0 ? getPredictionBandFromRatio(mockPerformanceRatio) : "No Mock Data";
+  const minMockTestsForPrediction = Math.max(1, Number(markingSettings?.predictionMinimumMockTests ?? 5));
+  const predictionReady = mockPredictionHistory.length >= minMockTestsForPrediction;
+  const predictedScore = predictionReady ? Math.round(predictedMaxScore * mockPerformanceRatio) : 0;
+  const predictionRange = predictionReady
+    ? getPredictionBandFromRatio(mockPerformanceRatio)
+    : `Complete ${minMockTestsForPrediction} mock tests`;
   const revisionPendingCount = getRevisionPendingCount({
     configuredLimit: configuredRevisionLimit,
     weakAreasCount: weakAreas.length,
@@ -431,6 +521,8 @@ router.get("/stats", requireAuth, requireOnboardingComplete, async (req: Authent
     predictedScore,
     predictedMaxScore,
     predictionRange,
+    predictionReady,
+    minMockTestsForPrediction,
     mockTestsCompleted: mockPredictionHistory.length,
     mockPredictionHistory: mockPredictionHistory.slice(0, 10),
     chapterCoveragePercent: Math.round(chapterCoverage * 100),
@@ -456,11 +548,39 @@ router.get("/notifications", requireAuth, async (req: AuthenticatedRequest, res)
   const revisionPendingCount = user.onboardingComplete
     ? getRevisionPendingCount({ configuredLimit: configuredRevisionLimit, weakAreasCount: weakTopicsCount })
     : 0;
-  const notifications = await buildNotifications(user, userId, revisionPendingCount, weakTopicsCount, remainingToday);
-  res.json({
-    count: notifications.length,
-    items: notifications,
+  const page = Math.max(1, Number(req.query.page || 1));
+  const limit = Math.min(50, Math.max(1, Number(req.query.limit || 20)));
+  const notifications = await buildNotifications(user, userId, revisionPendingCount, weakTopicsCount, remainingToday, {
+    page,
+    limit,
+    type: String(req.query.type || ""),
+    status: String(req.query.status || ""),
+    date: String(req.query.date || ""),
   });
+  res.json({
+    count: notifications.unreadCount,
+    total: notifications.total,
+    items: notifications.items,
+    meta: notifications.meta,
+  });
+});
+
+router.post("/notifications/:id/read", requireAuth, async (req: AuthenticatedRequest, res) => {
+  const id = String(req.params["id"] || "");
+  if (!id.match(/^[a-f\d]{24}$/i)) {
+    res.json({ success: true, synthetic: true });
+    return;
+  }
+  const updated = await UserNotification.findOneAndUpdate(
+    { _id: id, userId: req.userId! },
+    { readAt: new Date() },
+    { new: true },
+  );
+  if (!updated) {
+    res.status(404).json({ error: "not_found", message: "Notification not found" });
+    return;
+  }
+  res.json({ success: true, id: updated.id, readAt: updated.readAt });
 });
 
 export default router;
