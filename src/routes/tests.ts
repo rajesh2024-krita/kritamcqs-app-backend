@@ -36,6 +36,11 @@ import { shuffleQuestionOptionsForDelivery } from "../lib/question-randomization
 
 const router: IRouter = Router();
 
+const OFFICIAL_EXAM_PATTERNS: Record<string, { totalQuestions: number; durationMinutes: number; maxScore: number }> = {
+  NEET: { totalQuestions: 180, durationMinutes: 180, maxScore: 720 },
+  JEE: { totalQuestions: 75, durationMinutes: 180, maxScore: 300 },
+};
+
 function buildIdVariants(ids: Array<string | number>) {
   const stringIds = ids.map((value) => String(value)).filter(Boolean);
   const objectIds = stringIds
@@ -129,7 +134,7 @@ function scoreAnswer({
   }
   if (questionRule && Number.isFinite(Number(questionRule.negativeMarks))) return Number(questionRule.negativeMarks);
   if (appliedRule && Number.isFinite(Number(appliedRule.wrong))) return Number(appliedRule.wrong);
-  if (patternPreset === "JEE_REAL" && question.responseType === "numeric") return 0;
+  if (patternPreset === "JEE_REAL" && String(question?.responseType || "").toLowerCase() === "numeric") return 0;
   return -negativeMarks;
 }
 
@@ -165,6 +170,16 @@ function buildPrediction({
     maxScore,
     summary: `Based on this ${examLabel} pattern, your predicted score is ${Math.round(score)}/${maxScore}. ${level}`,
   };
+}
+
+function getGeneratedSessionTiming(pattern: string, questionCount: number) {
+  const normalizedPattern = String(pattern || "").toUpperCase();
+  const official = OFFICIAL_EXAM_PATTERNS[normalizedPattern];
+  if (official && questionCount >= official.totalQuestions) {
+    return { durationMinutes: official.durationMinutes, timeLimitSeconds: official.durationMinutes * 60 };
+  }
+  const timeLimitSeconds = Math.max(60, questionCount * 90);
+  return { durationMinutes: Math.ceil(timeLimitSeconds / 60), timeLimitSeconds };
 }
 
 async function findQuestionsForPractice({
@@ -425,6 +440,7 @@ router.post("/generate", requireAuth, requireOnboardingComplete, async (req: Aut
 
     const firstQuestion = selectedQuestions[0];
     const subject = firstQuestion?.subjectId ? await Subject.findById(firstQuestion.subjectId) : null;
+    const timing = getGeneratedSessionTiming(requestedExamMode, selectedQuestions.length);
     const session = await createLearningSession({
       userId,
       type: body.mode === "revision" ? "revision" : body.mode === "practice" ? "practice" : "test",
@@ -440,6 +456,10 @@ router.post("/generate", requireAuth, requireOnboardingComplete, async (req: Aut
         chapterIds: body.chapterIds ?? [],
         userPerformanceTier: performanceProfile.tier,
         adaptiveRatio,
+        durationMinutes: timing.durationMinutes,
+        maxScore: OFFICIAL_EXAM_PATTERNS[String(requestedExamMode).toUpperCase()]?.totalQuestions === selectedQuestions.length
+          ? OFFICIAL_EXAM_PATTERNS[String(requestedExamMode).toUpperCase()]?.maxScore
+          : selectedQuestions.length * 4,
       },
       title,
     });
@@ -453,7 +473,7 @@ router.post("/generate", requireAuth, requireOnboardingComplete, async (req: Aut
       origin,
       questions: questionsJson,
       totalQuestions: selectedQuestions.length,
-      timeLimit: selectedQuestions.length * 90,
+      timeLimit: timing.timeLimitSeconds,
       mode: body.mode,
     });
   } catch (error) {
@@ -471,6 +491,32 @@ router.post("/:testId/submit", requireAuth, requireOnboardingComplete, async (re
     const session = await LearningSession.findById(sessionId);
     if (!session || session.userId !== userId) {
       res.status(404).json({ error: "not_found", message: "Session not found" });
+      return;
+    }
+
+    const existingAttempt = await SessionAttempt.findOne({ userId, sessionId: session.id, completedAt: { $ne: null } }).sort({ createdAt: -1 });
+    if (existingAttempt) {
+      res.json({
+        sessionId: session.id,
+        attemptId: existingAttempt.id,
+        score: existingAttempt.score ?? 0,
+        accuracy: existingAttempt.accuracy ?? 0,
+        timeTaken: existingAttempt.timeTaken ?? 0,
+        correctCount: existingAttempt.correctCount ?? 0,
+        incorrectCount: existingAttempt.incorrectCount ?? 0,
+        skippedCount: existingAttempt.skippedCount ?? 0,
+        totalQuestions: existingAttempt.totalQuestions ?? 0,
+        maxScore: Number((session.filterSnapshot as any)?.maxScore ?? (existingAttempt.totalQuestions ?? 0) * 4),
+        topicBreakdown: existingAttempt.topicBreakdownJson ?? [],
+        comparison: existingAttempt.comparisonJson ?? null,
+        duplicate: true,
+      });
+      return;
+    }
+
+    const configuredDurationMinutes = Number((session.filterSnapshot as any)?.durationMinutes || 0);
+    if (configuredDurationMinutes > 0 && Number(body.timeTaken || 0) > configuredDurationMinutes * 60 + 60) {
+      res.status(400).json({ error: "timer_invalid", message: "Submitted time exceeds the configured test duration." });
       return;
     }
 
@@ -500,7 +546,10 @@ router.post("/:testId/submit", requireAuth, requireOnboardingComplete, async (re
     > = {};
     const questionAttemptDocs: Array<Record<string, unknown>> = [];
 
-    for (const answer of body.answers) {
+    const answerMap = new Map(body.answers.map((answer) => [String(answer.questionId), answer]));
+
+    for (const sessionQuestionId of session.questionIds.map(String)) {
+      const answer = answerMap.get(sessionQuestionId) || { questionId: sessionQuestionId, skipped: true };
       const questionId = String(answer.questionId);
       const question = qMap.get(questionId);
       if (!question) continue;
@@ -522,13 +571,19 @@ router.post("/:testId/submit", requireAuth, requireOnboardingComplete, async (re
 
       const selectedOption = answer.selectedOption ? String(answer.selectedOption) : undefined;
       const selectedOptions = Array.isArray((answer as any).selectedOptions) ? (answer as any).selectedOptions.map(String) : [];
-      const numericAnswer = (answer as any).numericAnswer ? String((answer as any).numericAnswer) : undefined;
+      const numericAnswer = (answer as any).numericAnswer ? String((answer as any).numericAnswer).trim() : undefined;
       const isSkipped = Boolean(answer.skipped || (!selectedOption && selectedOptions.length === 0 && !numericAnswer));
+      const responseType = String(question.responseType || "").toLowerCase();
+      const numericSubmitted = numericAnswer !== undefined && /^-?\d+(\.\d+)?$/.test(numericAnswer);
+      const numericCorrectAnswer = String(question.numericAnswer ?? "").trim();
+      const numericIsCorrect = numericSubmitted
+        && /^-?\d+(\.\d+)?$/.test(numericCorrectAnswer)
+        && Math.abs(Number(numericAnswer) - Number(numericCorrectAnswer)) < 1e-6;
       const isCorrect = isSkipped
         ? false
-        : question.responseType === "numeric"
-          ? Number(numericAnswer) === Number(question.numericAnswer ?? "")
-          : question.responseType === "multiple"
+        : responseType === "numeric"
+          ? numericIsCorrect
+          : responseType === "multiple"
             ? [...selectedOptions].sort().join(",") === [...(question.correctOptions ?? [])].sort().join(",")
             : selectedOption === question.correctOption;
 
@@ -579,7 +634,7 @@ router.post("/:testId/submit", requireAuth, requireOnboardingComplete, async (re
       });
     }
 
-    const total = body.answers.length;
+    const total = session.questionIds.length;
     const accuracy = total > 0 ? (correct / total) * 100 : 0;
     const topicBreakdown = Object.entries(topicMap).map(([, stats]) => ({
       subjectId: stats.subjectId,
