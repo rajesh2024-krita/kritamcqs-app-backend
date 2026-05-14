@@ -5,6 +5,7 @@ import { Coupon, Invoice, PaymentGatewaySettings, Subscription, SubscriptionPlan
 import { CreateOrderBody, VerifyPaymentBody } from "@api/zod";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { generateInvoiceForSubscription, getInvoiceSettings, regenerateInvoicePdf } from "../lib/invoices";
+import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 
 const router: IRouter = Router();
 
@@ -591,6 +592,24 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
         transactionDate: pendingSubscription.transactionDate,
       },
     });
+
+    try {
+      const invoiceSettings = await getInvoiceSettings();
+      const user = await User.findById(req.userId);
+      if (invoiceSettings.emailEnabled && user?.email) {
+        await sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.PAYMENT_SUCCESS, user.email, {
+          user_name: user.name || user.email || "Learner",
+          payment_amount: `${pricing.currency || "INR"} ${Number(pricing.finalAmount || 0).toFixed(2)}`,
+          payment_status: "PAID",
+          transaction_id: body.paymentId || "",
+          plan_name: plan.name,
+          expiry_date: expiresAt.toLocaleDateString("en-IN"),
+          support_email: invoiceSettings.companyEmail || invoiceSettings.smtp?.fromEmail || "support@krita.com",
+        });
+      }
+    } catch (err) {
+      req.log.warn({ err, subscriptionId: String(pendingSubscription._id) }, "Payment success email failed");
+    }
 
     res.json({ isPremium: true, expiresAt: expiresAt.toISOString(), plan: plan.name, pricing, invoice: invoice ? { id: String(invoice._id), invoiceNumber: invoice.invoiceNumber, emailStatus: invoice.emailStatus } : null });
   } catch (error) {

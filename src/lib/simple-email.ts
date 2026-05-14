@@ -1,122 +1,198 @@
 import net from "node:net";
 import tls from "node:tls";
 
-export type MailAttachment = { filename: string; contentType: string; content: Buffer };
-export type SmtpConfig = {
-  host?: string;
-  port?: number;
-  secure?: boolean;
-  user?: string;
-  pass?: string;
-  fromName?: string;
-  fromEmail?: string;
-};
-
-function encodeBase64(value: string | Buffer) {
+function encodeBase64(value: string) {
   return Buffer.from(value).toString("base64");
 }
 
-function escapeHeader(value: string) {
-  return String(value || "").replace(/[\r\n]+/g, " ").trim();
-}
+export type EmailAttachment = {
+  filename: string;
+  contentType?: string;
+  content: Buffer | string;
+};
 
-function waitLine(socket: net.Socket): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let buffer = "";
-    const onData = (chunk: Buffer) => {
-      buffer += chunk.toString("utf8");
-      const lines = buffer.split(/\r?\n/).filter(Boolean);
-      const last = lines[lines.length - 1] || "";
-      if (/^\d{3} /.test(last)) {
-        socket.off("data", onData);
-        resolve(buffer);
-      }
-    };
-    socket.on("data", onData);
-    socket.once("error", reject);
-  });
-}
-
-async function command(socket: net.Socket, text: string, expected: number[]) {
-  socket.write(`${text}\r\n`);
-  const response = await waitLine(socket);
-  const code = Number(response.slice(0, 3));
-  if (!expected.includes(code)) throw new Error(`SMTP command failed: ${response.trim()}`);
-}
-
-export async function sendEmail({
-  smtp,
-  to,
-  subject,
-  text,
-  attachments = [],
-}: {
-  smtp: SmtpConfig;
+export type SendEmailInput = {
+  smtp: any;
   to: string;
   subject: string;
-  text: string;
-  attachments?: MailAttachment[];
-}) {
-  if (!smtp.host || !smtp.fromEmail || !to) {
-    return { skipped: true, reason: "SMTP host, from email, or recipient email is missing" };
-  }
+  text?: string;
+  html?: string;
+  attachments?: EmailAttachment[];
+};
 
-  const port = Number(smtp.port || (smtp.secure ? 465 : 587));
-  let socket: net.Socket = smtp.secure
-    ? tls.connect(port, smtp.host, { servername: smtp.host })
-    : net.connect(port, smtp.host);
+function escapeHeader(value: string) {
+  return String(value || "").replace(/[\r\n"]/g, "");
+}
 
-  await waitLine(socket);
-  await command(socket, `EHLO ${smtp.host}`, [250]);
+function normalizeAttachmentContent(content: Buffer | string) {
+  return Buffer.isBuffer(content) ? content : Buffer.from(String(content), "utf8");
+}
 
-  if (!smtp.secure) {
-    await command(socket, "STARTTLS", [220]);
-    socket = tls.connect({ socket, servername: smtp.host });
-    await command(socket, `EHLO ${smtp.host}`, [250]);
-  }
-
-  if (smtp.user && smtp.pass) {
-    await command(socket, "AUTH LOGIN", [334]);
-    await command(socket, encodeBase64(smtp.user), [334]);
-    await command(socket, encodeBase64(smtp.pass), [235]);
-  }
-
-  const boundary = `krita-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+function buildMimeMessage({ smtp, to, subject, text = "", html = "", attachments = [] }: SendEmailInput) {
   const fromLabel = smtp.fromName ? `"${escapeHeader(smtp.fromName)}" <${smtp.fromEmail}>` : smtp.fromEmail;
-  const parts = [
+  const headers = [
     `From: ${fromLabel}`,
-    `To: ${escapeHeader(to)}`,
+    `To: ${to}`,
     `Subject: ${escapeHeader(subject)}`,
     "MIME-Version: 1.0",
-    `Content-Type: multipart/mixed; boundary="${boundary}"`,
-    "",
-    `--${boundary}`,
-    "Content-Type: text/plain; charset=utf-8",
-    "Content-Transfer-Encoding: 7bit",
-    "",
-    text,
   ];
 
-  for (const attachment of attachments) {
-    parts.push(
-      `--${boundary}`,
-      `Content-Type: ${attachment.contentType}; name="${escapeHeader(attachment.filename)}"`,
-      "Content-Transfer-Encoding: base64",
-      `Content-Disposition: attachment; filename="${escapeHeader(attachment.filename)}"`,
+  if (!html && !attachments.length) {
+    return [
+      ...headers,
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: 8bit",
       "",
-      attachment.content.toString("base64").replace(/(.{76})/g, "$1\r\n"),
+      text,
+    ].join("\r\n");
+  }
+
+  const mixedBoundary = `mixed_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const altBoundary = `alt_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  const parts = [
+    ...headers,
+    `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
+    "",
+    `--${mixedBoundary}`,
+    `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
+    "",
+    `--${altBoundary}`,
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    text || html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
+  ];
+
+  if (html) {
+    parts.push(
+      `--${altBoundary}`,
+      "Content-Type: text/html; charset=utf-8",
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      html,
     );
   }
 
-  parts.push(`--${boundary}--`, "");
-  const message = parts.join("\r\n");
+  parts.push(`--${altBoundary}--`);
 
-  await command(socket, `MAIL FROM:<${smtp.fromEmail}>`, [250]);
-  await command(socket, `RCPT TO:<${to}>`, [250, 251]);
-  await command(socket, "DATA", [354]);
-  await command(socket, `${message}\r\n.`, [250]);
-  await command(socket, "QUIT", [221]);
-  socket.end();
+  for (const attachment of attachments) {
+    const filename = escapeHeader(attachment.filename || "attachment");
+    parts.push(
+      `--${mixedBoundary}`,
+      `Content-Type: ${attachment.contentType || "application/octet-stream"}; name="${filename}"`,
+      "Content-Transfer-Encoding: base64",
+      `Content-Disposition: attachment; filename="${filename}"`,
+      "",
+      normalizeAttachmentContent(attachment.content).toString("base64").replace(/.{1,76}/g, "$&\r\n").trim(),
+    );
+  }
 
-  return { skipped: false };
+  parts.push(`--${mixedBoundary}--`);
+  return parts.join("\r\n");
+}
+
+function wait(socket: net.Socket, expected: number[]) {
+  return new Promise<string>((resolve, reject) => {
+    const onData = (data: Buffer) => {
+      const response = data.toString();
+      const code = Number(response.slice(0, 3));
+      if (expected.includes(code)) resolve(response);
+      else reject(new Error(`SMTP command failed: ${response.trim()}`));
+    };
+
+    const onError = (error: Error) => reject(error);
+
+    socket.once("data", onData);
+    socket.once("error", onError);
+  });
+}
+
+async function command(socket: net.Socket, line: string, expected: number[]) {
+  socket.write(`${line}\r\n`);
+  return wait(socket, expected);
+}
+
+function waitForTlsConnect(socket: tls.TLSSocket, timeoutMs: number) {
+  return new Promise<void>((resolve, reject) => {
+    const onSecure = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onTimeout = () => {
+      cleanup();
+      reject(new Error("SMTP TLS handshake timed out"));
+    };
+
+    const cleanup = () => {
+      socket.off("secureConnect", onSecure);
+      socket.off("error", onError);
+      socket.off("timeout", onTimeout);
+    };
+
+    socket.once("secureConnect", onSecure);
+    socket.once("error", onError);
+    socket.once("timeout", onTimeout);
+    socket.setTimeout(timeoutMs);
+  });
+}
+
+export async function sendEmail(input: SendEmailInput): Promise<any> {
+  const { smtp, to, subject } = input;
+  if (!smtp?.host || !smtp?.fromEmail || !to) {
+    return { skipped: true, reason: "SMTP host, from email, or recipient email is missing" };
+  }
+
+  const port = Number(smtp.port || 587);
+  const useImplicitTls = port === 465;
+  const timeoutMs = 10000;
+
+  let socket: net.Socket = useImplicitTls
+    ? tls.connect({ host: smtp.host, port, servername: smtp.host, minVersion: "TLSv1.2", timeout: timeoutMs })
+    : net.connect({ host: smtp.host, port, timeout: timeoutMs });
+
+  socket.setTimeout(timeoutMs, () => socket.destroy(new Error("SMTP connection timed out")));
+
+  try {
+    if (useImplicitTls) {
+      await waitForTlsConnect(socket as tls.TLSSocket, timeoutMs);
+    }
+
+    await wait(socket, [220]);
+    await command(socket, `EHLO ${smtp.host}`, [250]);
+
+    if (!useImplicitTls) {
+      await command(socket, "STARTTLS", [220]);
+      socket = tls.connect({ socket, servername: smtp.host, minVersion: "TLSv1.2", timeout: timeoutMs });
+      await waitForTlsConnect(socket as tls.TLSSocket, timeoutMs);
+      await command(socket, `EHLO ${smtp.host}`, [250]);
+    }
+
+    if (smtp.user && smtp.pass) {
+      await command(socket, "AUTH LOGIN", [334]);
+      await command(socket, encodeBase64(smtp.user), [334]);
+      await command(socket, encodeBase64(smtp.pass), [235]);
+    } else if (smtp.user && smtp.accessToken) {
+      const token = Buffer.from(`user=${smtp.user}\x01auth=Bearer ${smtp.accessToken}\x01\x01`).toString("base64");
+      await command(socket, `AUTH XOAUTH2 ${token}`, [235]);
+    }
+
+    const message = buildMimeMessage(input);
+
+    await command(socket, `MAIL FROM:<${smtp.fromEmail}>`, [250]);
+    await command(socket, `RCPT TO:<${to}>`, [250, 251]);
+    await command(socket, "DATA", [354]);
+    socket.write(`${message}\r\n.\r\n`);
+    await wait(socket, [250]);
+    await command(socket, "QUIT", [221]);
+    return { sent: true };
+  } finally {
+    if (!socket.destroyed) {
+      socket.end();
+      socket.destroy();
+    }
+  }
 }

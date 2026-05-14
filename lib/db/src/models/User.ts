@@ -5,12 +5,24 @@ export interface IUser extends Document {
   mobile: string;
   email?: string;
   passwordHash?: string;
+  googleId?: string;
+  authTypes: string[];
   name?: string;
   address?: string;
   examMode?: string;
   level?: string;
   onboardingComplete: boolean;
   mobileVerified: boolean;
+  emailVerified?: boolean;
+  requiresProfileCompletion?: boolean;
+  country?: string;
+  state?: string;
+  city?: string;
+  userType?: string;
+  profileImage?: string;
+  isActive?: boolean;
+  isBlocked?: boolean;
+  lastLoginAt?: Date;
   isPremium: boolean;
   premiumExpiresAt?: Date;
   lastPurchase?: {
@@ -36,15 +48,27 @@ export interface IUser extends Document {
 
 const UserSchema = new Schema<IUser>(
   {
-    mobile: { type: String, required: true, unique: true },
+    mobile: { type: String, unique: true, sparse: true, trim: true },
     email: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
     passwordHash: String,
+    googleId: { type: String, unique: true, sparse: true, trim: true },
+    authTypes: { type: [String], default: [] },
     name: String,
     address: { type: String, default: "" },
     examMode: { type: String, trim: true },
     level: { type: String, trim: true },
     onboardingComplete: { type: Boolean, default: false },
     mobileVerified: { type: Boolean, default: false },
+    emailVerified: { type: Boolean, default: false },
+    requiresProfileCompletion: { type: Boolean, default: false },
+    country: { type: String, default: "" },
+    state: { type: String, default: "" },
+    city: { type: String, default: "" },
+    userType: { type: String, default: "" },
+    profileImage: { type: String, default: "" },
+    isActive: { type: Boolean, default: true },
+    isBlocked: { type: Boolean, default: false },
+    lastLoginAt: Date,
     isPremium: { type: Boolean, default: false },
     premiumExpiresAt: Date,
     lastPurchase: {

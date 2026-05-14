@@ -9,8 +9,8 @@ export interface AuthenticatedRequest extends Request {
 }
 
 export async function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunction) {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const authHeader = String(req.headers.authorization || "");
+  const token = authHeader.match(/^Bearer\s+(.+)$/i)?.[1] ?? null;
 
   if (!token) {
     res.status(401).json({ error: "unauthorized", message: "Authentication required" });
@@ -18,11 +18,21 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: string };
+    const decoded = jwt.verify(token.trim(), JWT_SECRET) as { userId?: string };
+    if (!decoded?.userId) {
+      res.status(401).json({ error: "invalid_token", message: "Invalid or expired token" });
+      return;
+    }
+
     const user = await User.findById(decoded.userId);
 
     if (!user) {
       res.status(401).json({ error: "user_not_found", message: "User not found" });
+      return;
+    }
+
+    if (user.isBlocked || user.isActive === false) {
+      res.status(403).json({ error: "account_disabled", message: "This account is not active. Contact support." });
       return;
     }
 

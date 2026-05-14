@@ -26,6 +26,7 @@ export interface IInvoiceSettings extends Document {
     secure?: boolean;
     user?: string;
     pass?: string;
+    accessToken?: string;
     fromName?: string;
     fromEmail?: string;
   };
@@ -88,6 +89,7 @@ const invoiceSettingsSchema = new Schema<IInvoiceSettings>(
       secure: { type: Boolean, default: false },
       user: { type: String, default: "" },
       pass: { type: String, default: "" },
+      accessToken: { type: String, default: "" },
       fromName: { type: String, default: "Krita Admin" },
       fromEmail: { type: String, default: "" },
     },
@@ -99,7 +101,9 @@ const invoiceSettingsSchema = new Schema<IInvoiceSettings>(
       transform: (_doc, ret) => {
         ret.id = ret._id?.toString();
         if (ret.smtp?.pass) ret.smtp.hasPassword = true;
+        if (ret.smtp?.accessToken) ret.smtp.hasAccessToken = true;
         if (ret.smtp) delete ret.smtp.pass;
+        if (ret.smtp) delete ret.smtp.accessToken;
         delete ret._id;
         delete ret.__v;
         return ret;

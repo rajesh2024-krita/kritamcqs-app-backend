@@ -9,7 +9,7 @@ import {
   User,
   UserNotification,
 } from "@api/db";
-import { sendEmail } from "./simple-email";
+import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "./email-templates";
 import { logger } from "./logger";
 
 const defaultFields = [
@@ -22,17 +22,21 @@ const defaultFields = [
   { id: "paidStamp", label: "{{paidStampText}}", x: 430, y: 120, size: 30, enabled: true },
 ];
 
-const defaultReminders = [10, 5, 2, 0].map((daysBefore) => ({
+const defaultReminders = [7, 3, 1, 0, -1].map((daysBefore) => ({
   daysBefore,
   enabled: true,
-  title: daysBefore === 0 ? "Premium expires today" : `Premium expires in ${daysBefore} days`,
+  title: daysBefore < 0 ? "Premium has expired" : daysBefore === 0 ? "Premium expires today" : `Premium expires in ${daysBefore} days`,
   body:
-    daysBefore === 0
+    daysBefore < 0
+      ? "Your premium plan has expired. Renew to restore unlimited access."
+      : daysBefore === 0
       ? "Your premium plan expires today. Renew to keep unlimited access."
       : `Your premium plan expires in ${daysBefore} days. Renew to keep unlimited access.`,
-  emailSubject: daysBefore === 0 ? "Your Krita Premium expires today" : `Your Krita Premium expires in ${daysBefore} days`,
+  emailSubject: daysBefore < 0 ? "Your Krita Premium has expired" : daysBefore === 0 ? "Your Krita Premium expires today" : `Your Krita Premium expires in ${daysBefore} days`,
   emailBody:
-    daysBefore === 0
+    daysBefore < 0
+      ? "Hi {{userName}}, your premium plan has expired. Renew to continue uninterrupted access."
+      : daysBefore === 0
       ? "Hi {{userName}}, your premium plan expires today. Renew to continue uninterrupted access."
       : "Hi {{userName}}, your premium plan expires in {{daysBefore}} days. Renew to continue uninterrupted access.",
 }));
@@ -650,16 +654,26 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
 
   if (settings.enabled && settings.emailEnabled && invoice.userEmail) {
     try {
-      const result = await sendEmail({
-        smtp: settings.smtp || {},
-        to: invoice.userEmail,
-        subject: `Invoice ${invoice.invoiceNumber} from ${settings.companyName}`,
-        text: `Hi ${invoice.userName || "Learner"},\n\nYour payment was successful and your invoice PDF is attached.\n\nInvoice: ${invoice.invoiceNumber}\nProduct: ${data.planName}\nPlan Amount: ${data.baseAmount}\nDiscount: ${data.discountAmount}\nTax (${data.taxPercent}%): ${data.taxAmount}\nConvenience Charges: ${data.convenienceCharge}\nGST on Convenience Charges (${data.convenienceChargeGstPercent}%): ${data.convenienceChargeGst}\nTotal Paid: ${data.totalAmount}\nPayment Status: ${data.paymentStatus}\nRazorpay Payment ID: ${data.transactionId || "-"}\n\nFor support, contact ${settings.companyEmail || settings.smtp?.fromEmail || "support"}.\n\n${settings.companyName}`,
-        attachments: [{ filename: `${invoice.invoiceNumber}.pdf`, contentType: "application/pdf", content: pdf }],
-      });
-      invoice.emailStatus = result.skipped ? "skipped" : "sent";
-      invoice.emailError = result.skipped ? result.reason : "";
-      invoice.sentAt = result.skipped ? undefined : new Date();
+      await sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.INVOICE_GENERATED, invoice.userEmail, {
+        user_name: invoice.userName || "Learner",
+        customer_name: invoice.userName || "Learner",
+        email: invoice.userEmail || "",
+        invoice_number: invoice.invoiceNumber,
+        invoice_amount: `${invoice.currency || "INR"} ${Number(invoice.amount || 0).toFixed(2)}`,
+        payment_amount: `${invoice.currency || "INR"} ${Number(invoice.amount || 0).toFixed(2)}`,
+        invoice_date: new Date(invoice.issuedAt || invoice.createdAt).toLocaleDateString(),
+        due_date: invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString("en-IN") : "",
+        tax_amount: `${invoice.currency || "INR"} ${Number(invoice.taxTotal || 0).toFixed(2)}`,
+        convenience_fee: `${invoice.currency || "INR"} ${Number(invoice.convenienceCharge || 0).toFixed(2)}`,
+        convenience_fee_gst: `${invoice.currency || "INR"} ${Number(invoice.convenienceChargeGst || 0).toFixed(2)}`,
+        total_amount: `${invoice.currency || "INR"} ${Number(invoice.grandTotal || invoice.amount || 0).toFixed(2)}`,
+        payment_status: invoice.status || "paid",
+        transaction_id: invoice.transactionId || "",
+        support_email: settings.companyEmail || settings.smtp?.fromEmail || "support@krita.com",
+      }, [{ filename: `${invoice.invoiceNumber}.pdf`, contentType: "application/pdf", content: pdf }]);
+
+      invoice.emailStatus = "sent";
+      invoice.sentAt = new Date();
       await invoice.save();
       logger.info({ invoiceNumber: invoice.invoiceNumber, to: invoice.userEmail, emailStatus: invoice.emailStatus }, "Invoice email processed");
     } catch (error) {
@@ -717,16 +731,27 @@ export async function processExpiryReminders() {
       );
       if (notification.createdAt?.getTime() === notification.updatedAt?.getTime()) created += 1;
 
+      const invoiceSettings = await getInvoiceSettings();
       if (settings.emailEnabled && user.email && !notification.emailStatus) {
-        const invoiceSettings = await getInvoiceSettings();
         try {
-          const result = await sendEmail({
-            smtp: invoiceSettings.smtp || {},
-            to: user.email,
-            subject: replaceTokens(reminder.emailSubject, data),
-            text: replaceTokens(reminder.emailBody, data),
+          const templateKey = Number(reminder.daysBefore) < 0
+            ? EMAIL_TEMPLATE_KEYS.SUBSCRIPTION_EXPIRED
+            : Number(reminder.daysBefore) > 0
+            ? EMAIL_TEMPLATE_KEYS.SUBSCRIPTION_RENEWAL_REMINDER
+            : EMAIL_TEMPLATE_KEYS.SUBSCRIPTION_EXPIRY_REMINDER;
+          await sendTemplatedEmail(templateKey, user.email, {
+            user_name: user.name || user.mobile || "Learner",
+            reminder_title: Number(reminder.daysBefore) < 0 ? "Subscription expired" : Number(reminder.daysBefore) === 0 ? "Subscription expires today" : "Subscription renewal reminder",
+            reminder_date: new Date().toLocaleDateString("en-IN"),
+            description: notification.body,
+            days_before: reminder.daysBefore,
+            expiry_date: subscription.endDate ? new Date(subscription.endDate).toLocaleDateString("en-IN") : "",
+            expiry_type: "Subscription",
+            plan_name: subscription.planId || "Premium Plan",
+            support_email: invoiceSettings.companyEmail || invoiceSettings.smtp?.fromEmail || "support@krita.com",
           });
-          notification.emailStatus = result.skipped ? "skipped" : "sent";
+
+          notification.emailStatus = "sent";
           await notification.save();
         } catch (error) {
           notification.emailStatus = "failed";

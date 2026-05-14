@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import {
   User,
+  AuthSettings,
   ChapterPerformance,
   DailyAssignment,
   ExamMarkingSettings,
@@ -15,6 +16,7 @@ import {
 } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { z } from "zod";
+import mongoose from "mongoose";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
 import { getLatestActivitySummary, getOrCreateDailyAssignment, getQuestionsAttemptedToday } from "../lib/learning";
 
@@ -25,6 +27,12 @@ const UpdatePreferencesBody = z.object({
   name: z.string().optional(),
   email: z.union([z.string().trim().email(), z.literal("")]).optional(),
   address: z.string().optional(),
+  mobile: z.string().optional(),
+  country: z.string().optional(),
+  state: z.string().optional(),
+  city: z.string().optional(),
+  userType: z.string().optional(),
+  profileImage: z.string().optional(),
 });
 const CompleteOnboardingBody = z.object({
   examMode: z.string().trim().min(1),
@@ -37,20 +45,26 @@ const DEFAULT_REVISION_CONFIG = {
   revisionEnabled: true,
 };
 
-async function ensureConfiguredMode(examMode?: string) {
-  if (!examMode) return;
-  const exists = await Mode.exists({ key: examMode });
-  if (!exists) {
+async function resolveConfiguredMode(examMode?: string) {
+  if (!examMode) return undefined;
+  const filters: any[] = [{ key: examMode }];
+  if (mongoose.isValidObjectId(examMode)) filters.push({ _id: examMode });
+  const mode = await Mode.findOne({ $or: filters }).select("key").lean();
+  if (!mode?.key) {
     throw new Error("Invalid exam mode");
   }
+  return mode.key;
 }
 
-async function ensureConfiguredLevel(level?: string) {
-  if (!level) return;
-  const exists = await LearningLevel.exists({ key: level, active: true });
-  if (!exists) {
+async function resolveConfiguredLevel(level?: string) {
+  if (!level) return undefined;
+  const filters: any[] = [{ key: level, active: true }];
+  if (mongoose.isValidObjectId(level)) filters.push({ _id: level, active: true });
+  const learningLevel = await LearningLevel.findOne({ $or: filters }).select("key").lean();
+  if (!learningLevel?.key) {
     throw new Error("Invalid learning level");
   }
+  return learningLevel.key;
 }
 
 function userResponse(user: any) {
@@ -65,11 +79,22 @@ function userResponse(user: any) {
     level: u.level,
     onboardingComplete: u.onboardingComplete,
     mobileVerified: u.mobileVerified,
+    emailVerified: u.emailVerified,
+    authTypes: u.authTypes ?? [],
+    requiresProfileCompletion: u.requiresProfileCompletion,
     isPremium: u.isPremium,
     premiumExpiresAt: u.premiumExpiresAt,
     createdAt: u.createdAt,
     isAdmin: u.isAdmin,
     migratedFromOldApp: u.migratedFromOldApp,
+    country: u.country,
+    state: u.state,
+    city: u.city,
+    userType: u.userType,
+    profileImage: u.profileImage,
+    isActive: u.isActive,
+    isBlocked: u.isBlocked,
+    lastLoginAt: u.lastLoginAt,
   };
 }
 
@@ -337,11 +362,11 @@ router.get("/me", requireAuth, async (req: AuthenticatedRequest, res) => {
 router.post("/onboarding", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const body = CompleteOnboardingBody.parse(req.body);
-    await ensureConfiguredMode(body.examMode);
-    await ensureConfiguredLevel(body.level);
+    const examMode = await resolveConfiguredMode(body.examMode);
+    const level = await resolveConfiguredLevel(body.level);
     const updated = await User.findByIdAndUpdate(
       req.userId,
-      { examMode: body.examMode, level: body.level, name: body.name, onboardingComplete: true },
+      { examMode, level, name: body.name, onboardingComplete: true, requiresProfileCompletion: false },
       { new: true }
     );
     if (!updated) {
@@ -362,12 +387,10 @@ router.post("/preferences", requireAuth, async (req: AuthenticatedRequest, res) 
     const unset: Record<string, unknown> = {};
 
     if (body.examMode) {
-      await ensureConfiguredMode(body.examMode);
-      updates["examMode"] = body.examMode;
+      updates["examMode"] = await resolveConfiguredMode(body.examMode);
     }
     if (body.level) {
-      await ensureConfiguredLevel(body.level);
-      updates["level"] = body.level;
+      updates["level"] = await resolveConfiguredLevel(body.level);
     }
     if (body.name !== undefined) updates["name"] = body.name;
     if (body.email !== undefined) {
@@ -376,6 +399,20 @@ router.post("/preferences", requireAuth, async (req: AuthenticatedRequest, res) 
       else unset["email"] = "";
     }
     if (body.address !== undefined) updates["address"] = body.address;
+    if (body.mobile !== undefined) updates["mobile"] = String(body.mobile || "").replace(/\D/g, "").slice(0, 15);
+    if (body.country !== undefined) updates["country"] = body.country;
+    if (body.state !== undefined) updates["state"] = body.state;
+    if (body.city !== undefined) updates["city"] = body.city;
+    if (body.userType !== undefined) updates["userType"] = body.userType;
+    if (body.profileImage !== undefined) updates["profileImage"] = body.profileImage;
+    if (body.name !== undefined && String(body.name || "").trim().length >= 2 && (body.email === undefined || String(body.email || "").trim())) {
+      const settings = await AuthSettings.findOne({ key: "default" });
+      if (settings?.profileMobileRequired && String(body.mobile || updates["mobile"] || "").replace(/\D/g, "").length < 7) {
+        res.status(400).json({ error: "mobile_required", message: "Mobile number is required to complete your profile." });
+        return;
+      }
+      updates["requiresProfileCompletion"] = false;
+    }
 
     const updated = await User.findByIdAndUpdate(
       req.userId,

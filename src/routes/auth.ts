@@ -1,23 +1,50 @@
 import { Router, type IRouter } from "express";
-import { Otp, User } from "@api/db";
-import { SendOtpBody, VerifyOtpBody } from "@api/zod";
+import { AuthOtp, AuthSettings, InvoiceSettings, User } from "@api/db";
 import jwt from "jsonwebtoken";
-import { checkVerificationCode, isTwilioConfigured, sendVerificationSms } from "../lib/twilio";
+import { generateOtp, generateResetToken, hashOtp, hashPassword, hashResetToken, verifyPassword } from "../lib/password";
+import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 
 const router: IRouter = Router();
 
 const JWT_SECRET = process.env["SESSION_SECRET"] ?? "krita-secret-key";
+
+const rateLimits = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(key: string, maxAttempts = 8, windowMs = 15 * 60 * 1000) {
+  const now = Date.now();
+  const current = rateLimits.get(key);
+  if (!current || current.resetAt <= now) {
+    rateLimits.set(key, { count: 1, resetAt: now + windowMs });
+    return true;
+  }
+  if (current.count >= maxAttempts) return false;
+  current.count += 1;
+  return true;
+}
 
 function userResponse(user: any) {
   const u = user.toJSON ? user.toJSON() : user;
   return {
     id: u.id,
     mobile: u.mobile,
+    email: u.email,
     name: u.name,
+    address: u.address,
     examMode: u.examMode,
     level: u.level,
     onboardingComplete: u.onboardingComplete,
     mobileVerified: u.mobileVerified,
+    emailVerified: Boolean(u.emailVerified || u.authTypes?.includes("email") || u.authTypes?.includes("google")),
+    authTypes: u.authTypes ?? [],
+    requiresProfileCompletion: Boolean(u.requiresProfileCompletion),
+    country: u.country,
+    state: u.state,
+    city: u.city,
+    userType: u.userType,
+    profileImage: u.profileImage,
+    isActive: u.isActive,
+    isBlocked: u.isBlocked,
+    lastLoginAt: u.lastLoginAt,
     isPremium: u.isPremium,
     premiumExpiresAt: u.premiumExpiresAt,
     createdAt: u.createdAt,
@@ -26,19 +53,32 @@ function userResponse(user: any) {
   };
 }
 
-function normalizeIndianMobile(input: string) {
-  const digits = input.replace(/\D/g, "");
-  const normalized = digits.startsWith("91") && digits.length === 12 ? digits.slice(2) : digits;
-
-  if (!/^[6-9]\d{9}$/.test(normalized)) {
-    return null;
-  }
-
-  return normalized;
+async function getAuthSettings() {
+  return AuthSettings.findOneAndUpdate({ key: "default" }, { $setOnInsert: { key: "default" } }, { upsert: true, new: true });
 }
 
-function formatE164IndianMobile(mobile: string) {
-  return `+91${mobile}`;
+function signUser(user: any, settings?: any) {
+  const timeout = Math.max(15, Number(settings?.sessionTimeoutMinutes || 43200));
+  return jwt.sign({ userId: user._id.toString(), mobile: user.mobile, email: user.email }, JWT_SECRET, { expiresIn: `${timeout}m` });
+}
+
+async function markLogin(user: any) {
+  if (user.isBlocked || user.isActive === false) {
+    throw new Error("This account is not active. Contact support.");
+  }
+  user.lastLoginAt = new Date();
+  await user.save();
+}
+
+function normalizeEmail(input: unknown) {
+  const email = String(input || "").trim().toLowerCase();
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}
+
+function normalizePassword(input: unknown) {
+  const password = String(input || "");
+  const strongEnough = password.length >= 8 && /[A-Z]/.test(password) && /[a-z]/.test(password) && /\d/.test(password);
+  return strongEnough && password.length <= 128 ? password : null;
 }
 
 function normalizeOtp(input: string) {
@@ -46,122 +86,309 @@ function normalizeOtp(input: string) {
   return /^\d{6}$/.test(otp) ? otp : null;
 }
 
-function getAuthMode(req: { headers: Record<string, unknown> }) {
-  return req.headers["x-auth-mode"] === "live" ? "live" : "development";
+function normalizeResetToken(input: unknown) {
+  const token = String(input || "").trim();
+  return /^[a-f0-9]{64}$/i.test(token) ? token : null;
 }
 
-router.post("/send-otp", async (req, res) => {
+router.get("/settings", async (_req, res) => {
+  const settings = await getAuthSettings();
+  res.json({
+    emailPasswordEnabled: settings.emailPasswordEnabled,
+    googleEnabled: settings.googleEnabled && Boolean(settings.googleClientId),
+    googleClientId: settings.googleEnabled ? settings.googleClientId : "",
+    profileMobileRequired: Boolean(settings.profileMobileRequired),
+  });
+});
+
+router.post("/register", async (req, res) => {
   try {
-    const body = SendOtpBody.parse(req.body);
-    const mobile = normalizeIndianMobile(body.mobile);
-    const authMode = getAuthMode(req);
-
-    if (!mobile) {
-      res.status(400).json({ error: "invalid_mobile", message: "Please enter a valid 10-digit mobile number" });
+    const settings = await getAuthSettings();
+    if (!settings.emailPasswordEnabled) {
+      res.status(403).json({ error: "email_auth_disabled", message: "Email/password registration is currently disabled." });
       return;
     }
-
-    if (authMode === "development") {
-      const otp = "123456";
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-
-      await Otp.findOneAndUpdate(
-        { mobile },
-        { mobile, otp, expiresAt, used: false },
-        { upsert: true, new: true },
-      );
-
-      req.log.info({ mobile, authMode }, "Development OTP generated");
-      res.json({
-        success: true,
-        message: `Development OTP ready for +91 ${mobile}`,
-        expiresIn: 600,
-        devOtp: otp,
-      });
+    const email = normalizeEmail(req.body?.email);
+    const password = normalizePassword(req.body?.password);
+    const name = String(req.body?.name || "").trim();
+    if (!email || !password || name.length < 2) {
+      res.status(400).json({ error: "invalid_registration", message: "Enter a valid name, email, and password." });
       return;
     }
-
-    if (!isTwilioConfigured()) {
-      req.log.error("Twilio Verify is not configured");
-      res.status(500).json({ error: "twilio_not_configured", message: "OTP service is not configured on the server" });
+    const existing = await User.findOne({ email });
+    if (existing) {
+      res.status(409).json({ error: "email_exists", message: "An account already exists for this email." });
       return;
     }
+    const user = await new User({
+      email,
+      name,
+      passwordHash: hashPassword(password),
+      authTypes: ["email"],
+      onboardingComplete: false,
+      mobileVerified: false,
+      isPremium: false,
+      isAdmin: false,
+    }).save();
+    await markLogin(user);
 
-    await sendVerificationSms(formatE164IndianMobile(mobile));
-    req.log.info({ mobile }, "OTP sent via Twilio Verify");
-
-    res.json({
-      success: true,
-      message: `OTP sent to +91 ${mobile}`,
-      expiresIn: 600,
+    const invoiceSettings = await InvoiceSettings.findOne({ key: "default" });
+    sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.AUTH_REGISTRATION, email, {
+      user_name: user.name || "Learner",
+      email: user.email,
+      app_name: invoiceSettings?.companyName || "Krita",
+      support_email: invoiceSettings?.companyEmail || invoiceSettings?.smtp?.fromEmail || "support@krita.com",
+    }).catch((err) => {
+      req.log.warn({ err, userId: String(user._id), email }, "Registration welcome email failed");
     });
+
+    res.status(201).json({ token: signUser(user, settings), user: userResponse(user), isNewUser: true });
   } catch (error) {
-    req.log.error({ error }, "Error sending OTP");
-    res.status(400).json({ error: "send_otp_failed", message: error instanceof Error ? error.message : "Failed to send OTP" });
+    req.log.error({ error }, "Email registration failed");
+    res.status(400).json({ error: "registration_failed", message: error instanceof Error ? error.message : "Registration failed" });
   }
 });
 
-router.post("/verify-otp", async (req, res) => {
+router.post("/login", async (req, res) => {
   try {
-    const body = VerifyOtpBody.parse(req.body);
-    const mobile = normalizeIndianMobile(body.mobile);
-    const otp = normalizeOtp(body.otp);
-    const authMode = getAuthMode(req);
-
-    if (!mobile) {
-      res.status(400).json({ error: "invalid_mobile", message: "Please enter a valid 10-digit mobile number" });
+    const settings = await getAuthSettings();
+    if (!settings.emailPasswordEnabled) {
+      res.status(403).json({ error: "email_auth_disabled", message: "Email/password login is currently disabled." });
       return;
     }
-
-    if (!otp) {
-      res.status(400).json({ error: "invalid_otp", message: "OTP must be a 6-digit number" });
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password || "");
+    if (email && !checkRateLimit(`login:${email}`)) {
+      res.status(429).json({ error: "rate_limited", message: "Too many login attempts. Try again later." });
       return;
     }
-
-    if (authMode === "development") {
-      const validOtp = await Otp.findOne({
-        mobile,
-        otp,
-        used: false,
-        expiresAt: { $gt: new Date() },
-      });
-
-      if (!validOtp) {
-        res.status(401).json({ error: "invalid_otp", message: "Invalid or expired OTP" });
-        return;
-      }
-
-      await Otp.findByIdAndUpdate(validOtp._id, { used: true });
-    } else if (!isTwilioConfigured()) {
-      req.log.error("Twilio Verify is not configured");
-      res.status(500).json({ error: "twilio_not_configured", message: "OTP service is not configured on the server" });
+    if (!email || !password) {
+      res.status(400).json({ error: "invalid_login", message: "Enter a valid email and password." });
       return;
-    } else {
-      const verification = await checkVerificationCode(formatE164IndianMobile(mobile), otp);
-
-      if (verification.status !== "approved" || !verification.valid) {
-        res.status(401).json({ error: "invalid_otp", message: "Invalid or expired OTP" });
-        return;
-      }
     }
-
-    let user = await User.findOne({ mobile });
-    let isNewUser = false;
-
-    if (!user) {
-      user = await new User({ mobile, onboardingComplete: false, mobileVerified: true, isPremium: false, isAdmin: false }).save();
-      isNewUser = true;
-    } else if (!user.mobileVerified) {
-      user.mobileVerified = true;
-      await user.save();
+    const user = await User.findOne({ email });
+    if (!user?.passwordHash || !verifyPassword(password, user.passwordHash)) {
+      res.status(401).json({ error: "invalid_credentials", message: "Invalid email or password." });
+      return;
     }
-
-    const token = jwt.sign({ userId: user._id.toString(), mobile: user.mobile }, JWT_SECRET, { expiresIn: "30d" });
-
-    res.json({ token, user: userResponse(user), isNewUser });
+    user.authTypes = [...new Set([...(user.authTypes || []), "email"])];
+    await markLogin(user);
+    res.json({ token: signUser(user, settings), user: userResponse(user), isNewUser: false });
   } catch (error) {
-    req.log.error({ error }, "Error verifying OTP");
-    res.status(400).json({ error: "verify_failed", message: error instanceof Error ? error.message : "OTP verification failed" });
+    req.log.error({ error }, "Email login failed");
+    res.status(400).json({ error: "login_failed", message: "Login failed" });
+  }
+});
+
+router.post("/google", async (req, res) => {
+  try {
+    const settings = await getAuthSettings();
+    if (!settings.googleEnabled || !settings.googleClientId) {
+      res.status(403).json({ error: "google_disabled", message: "Google login is currently disabled." });
+      return;
+    }
+    const credential = String(req.body?.credential || "");
+    if (!credential) {
+      res.status(400).json({ error: "missing_credential", message: "Google credential is required." });
+      return;
+    }
+    const googleResponse = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
+    const googleUser: any = await googleResponse.json().catch(() => null);
+    if (!googleResponse.ok || googleUser?.aud !== settings.googleClientId || !googleUser?.email) {
+      res.status(401).json({ error: "invalid_google_token", message: "Google verification failed." });
+      return;
+    }
+
+    const email = normalizeEmail(googleUser.email);
+    if (!email) {
+      res.status(400).json({ error: "invalid_google_email", message: "Google account did not provide a valid email." });
+      return;
+    }
+
+    let user = await User.findOne({ $or: [{ googleId: googleUser.sub }, { email }] });
+    let isNewUser = false;
+    if (!user) {
+      user = await new User({
+        email,
+        googleId: googleUser.sub,
+        name: googleUser.name || "",
+        profileImage: googleUser.picture || "",
+        authTypes: ["google"],
+        onboardingComplete: false,
+        requiresProfileCompletion: true,
+        isPremium: false,
+        isAdmin: false,
+      }).save();
+      isNewUser = true;
+    } else {
+      user.googleId = user.googleId || googleUser.sub;
+      user.email = user.email || email;
+      user.name = user.name || googleUser.name || "";
+      user.profileImage = user.profileImage || googleUser.picture || "";
+      user.authTypes = [...new Set([...(user.authTypes || []), "google"])];
+      user.requiresProfileCompletion = !user.name || !user.email;
+    }
+    await markLogin(user);
+
+    if (isNewUser) {
+      const invoiceSettings = await InvoiceSettings.findOne({ key: "default" });
+      sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.AUTH_REGISTRATION, user.email, {
+        user_name: user.name || "Learner",
+        email: user.email,
+        app_name: invoiceSettings?.companyName || "Krita",
+        support_email: invoiceSettings?.companyEmail || invoiceSettings?.smtp?.fromEmail || "support@krita.com",
+      }).catch((err) => {
+        req.log.warn({ err, userId: String(user._id), email: user.email }, "Google registration welcome email failed");
+      });
+    }
+
+    res.json({ token: signUser(user, settings), user: userResponse(user), isNewUser });
+  } catch (error) {
+    req.log.error({ error }, "Google login failed");
+    res.status(400).json({ error: "google_login_failed", message: "Google login failed" });
+  }
+});
+
+router.post("/forgot-password", async (req, res) => {
+  try {
+    const settings = await getAuthSettings();
+    if (!settings.emailPasswordEnabled) {
+      res.status(403).json({ error: "email_auth_disabled", message: "Email/password login is currently disabled." });
+      return;
+    }
+    const email = normalizeEmail(req.body?.email);
+    if (!email) {
+      res.status(400).json({ error: "invalid_email", message: "Enter a valid registered email." });
+      return;
+    }
+    if (!checkRateLimit(`forgot:${email}`, 5, 30 * 60 * 1000)) {
+      res.status(429).json({ error: "rate_limited", message: "Too many reset requests. Try again later." });
+      return;
+    }
+    // Allow OTP even if passwordHash is missing (some users may have been created without passwordHash yet).
+    // Reset will create/override passwordHash in /reset-password.
+    const user = await User.findOne({ email });
+    if (!user) {
+      res.status(404).json({ error: "email_not_found", message: "No account was found for this email." });
+      return;
+    }
+    const latest = await AuthOtp.findOne({ email, purpose: "password_reset", used: false }).sort({ createdAt: -1 });
+    if (latest && latest.resendCount >= settings.resetOtpMaxResends && latest.expiresAt > new Date()) {
+      res.status(429).json({ error: "retry_limit", message: "OTP resend limit reached. Try again later." });
+      return;
+    }
+    const otp = generateOtp();
+    const expiresAt = new Date(Date.now() + settings.resetOtpExpiryMinutes * 60 * 1000);
+    await AuthOtp.updateMany({ email, purpose: "password_reset", used: false }, { $set: { used: true } });
+    await AuthOtp.create({
+      email,
+      purpose: "password_reset",
+      otpHash: hashOtp(otp),
+      expiresAt,
+      resendCount: latest ? latest.resendCount + 1 : 1,
+    });
+
+    const invoiceSettings = await InvoiceSettings.findOne({ key: "default" });
+    await sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.AUTH_FORGOT_PASSWORD_OTP, email, {
+      otp,
+      otp_code: otp,
+      otp_expiry: `${settings.resetOtpExpiryMinutes} minutes`,
+      expiry_time: `${settings.resetOtpExpiryMinutes} minutes`,
+      reset_link: "",
+      user_name: user.name || "Learner",
+      email,
+      support_email: invoiceSettings?.companyEmail || invoiceSettings?.smtp?.fromEmail || "support@krita.com",
+    });
+
+    res.json({ success: true, message: "Password reset OTP sent to your registered email.", expiresIn: settings.resetOtpExpiryMinutes * 60 });
+  } catch (error) {
+    req.log.error({ error }, "Forgot password failed");
+    res.status(400).json({ error: "forgot_password_failed", message: error instanceof Error ? error.message : "Unable to send reset OTP." });
+  }
+});
+
+router.post("/verify-reset-otp", async (req, res) => {
+  try {
+    const settings = await getAuthSettings();
+    const email = normalizeEmail(req.body?.email);
+    const otp = normalizeOtp(String(req.body?.otp || ""));
+    if (!email || !otp) {
+      res.status(400).json({ error: "invalid_otp", message: "Enter the 6-digit OTP." });
+      return;
+    }
+
+    const record = await AuthOtp.findOne({ email, purpose: "password_reset", used: false }).sort({ createdAt: -1 });
+    if (!record) {
+      res.status(401).json({ error: "invalid_otp", message: "Invalid OTP." });
+      return;
+    }
+    if (record.expiresAt <= new Date()) {
+      res.status(410).json({ error: "otp_expired", message: "OTP Expired" });
+      return;
+    }
+
+    const attempts = Number(record.attempts ?? 0);
+    if (attempts >= settings.resetOtpMaxAttempts) {
+      res.status(429).json({ error: "attempt_limit", message: "OTP attempt limit reached. Request a new OTP." });
+      return;
+    }
+
+    if (record.otpHash !== hashOtp(otp)) {
+      record.attempts = attempts + 1;
+      await record.save();
+      res.status(401).json({ error: "invalid_otp", message: "Invalid OTP" });
+      return;
+    }
+
+    const resetToken = generateResetToken();
+    record.attempts = attempts + 1;
+    record.verifiedAt = new Date();
+    record.resetTokenHash = hashResetToken(resetToken);
+    await record.save();
+    res.json({ success: true, message: "OTP verified.", resetToken, expiresAt: record.expiresAt });
+  } catch (error) {
+    req.log.error({ error }, "Verify reset OTP failed");
+    res.status(400).json({ error: "verify_otp_failed", message: "Unable to verify OTP." });
+  }
+});
+
+router.post("/reset-password", async (req, res) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const resetToken = normalizeResetToken(req.body?.resetToken);
+    const password = normalizePassword(req.body?.password);
+    if (!email || !resetToken || !password) {
+      res.status(400).json({ error: "invalid_reset", message: "Verify OTP before resetting your password." });
+      return;
+    }
+    const record = await AuthOtp.findOne({
+      email,
+      purpose: "password_reset",
+      resetTokenHash: hashResetToken(resetToken),
+      used: false,
+    }).sort({ createdAt: -1 });
+    if (!record?.verifiedAt) {
+      res.status(401).json({ error: "otp_not_verified", message: "Verify OTP before resetting your password." });
+      return;
+    }
+    if (record.expiresAt <= new Date()) {
+      res.status(410).json({ error: "otp_expired", message: "OTP Expired" });
+      return;
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      res.status(404).json({ error: "user_not_found", message: "User not found." });
+      return;
+    }
+    user.passwordHash = hashPassword(password);
+    user.authTypes = [...new Set([...(user.authTypes || []), "email"])];
+    record.used = true;
+    await Promise.all([user.save(), record.save()]);
+    res.json({ success: true, message: "Password reset successfully." });
+  } catch (error) {
+    req.log.error({ error }, "Reset password failed");
+    res.status(400).json({ error: "reset_password_failed", message: "Unable to reset password." });
   }
 });
 
@@ -169,28 +396,8 @@ router.post("/logout", (_req, res) => {
   res.json({ success: true, message: "Logged out successfully" });
 });
 
-router.post("/demo-login", async (req, res) => {
-  try {
-    const { mobile } = req.body as { mobile?: string };
-    if (!mobile) {
-      res.status(400).json({ error: "mobile_required", message: "Mobile number is required" });
-      return;
-    }
-
-    const user = await User.findOne({ mobile });
-
-    if (!user) {
-      res.status(404).json({ error: "user_not_found", message: "Demo user not found" });
-      return;
-    }
-
-    const token = jwt.sign({ userId: user._id.toString(), mobile: user.mobile }, JWT_SECRET, { expiresIn: "30d" });
-
-    res.json({ token, user: userResponse(user), isNewUser: false });
-  } catch (error) {
-    req.log.error({ error }, "Error in demo login");
-    res.status(500).json({ error: "demo_login_failed", message: "Demo login failed" });
-  }
+router.post("/demo-login", async (_req, res) => {
+  res.status(410).json({ error: "demo_login_removed", message: "Demo/mobile login has been removed. Use email/password or Google login." });
 });
 
 export default router;

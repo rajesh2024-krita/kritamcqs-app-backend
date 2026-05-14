@@ -11,6 +11,8 @@ export async function connect(): Promise<void> {
 export { mongoose };
 export * from "./models/User";
 export * from "./models/Otp";
+export * from "./models/AuthOtp";
+export * from "./models/AuthSettings";
 export * from "./models/Mode";
 export * from "./models/LearningLevel";
 export * from "./models/Difficulty";
@@ -46,5 +48,8 @@ export * from "./models/InvoiceSettings";
 export * from "./models/Invoice";
 export * from "./models/ExamMarkingSettings";
 export * from "./models/NotificationSettings";
+export * from "./models/EmailTemplate";
+export * from "./models/EmailLog";
+export * from "./models/HelpDeskSettings";
 export * from "./models/UserNotification";
 export * from "./models/SupportTicket";
