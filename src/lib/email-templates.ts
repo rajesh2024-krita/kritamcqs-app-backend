@@ -5,6 +5,8 @@ import { logger } from "./logger";
 export const EMAIL_TEMPLATE_KEYS = {
   SMTP_TEST: "smtp_test",
   AUTH_REGISTRATION: "auth_registration_email",
+  AUTH_WELCOME: "auth_welcome_email",
+  AUTH_ACCOUNT_VERIFICATION: "auth_account_verification",
   AUTH_FORGOT_PASSWORD_OTP: "auth_forgot_password_otp",
   AUTH_LOGIN_OTP: "auth_login_otp",
   INVOICE_GENERATED: "invoice_generated",
@@ -15,6 +17,8 @@ export const EMAIL_TEMPLATE_KEYS = {
   NOTIFICATION_UPDATE: "notification_update",
   NOTIFICATION_OFFER: "notification_offer",
   NOTIFICATION_GENERAL: "notification_general",
+  NOTIFICATION_REMINDER: "notification_reminder",
+  ADMIN_NOTIFICATION: "admin_notification",
   HELPDESK_TICKET_CREATED: "helpdesk_ticket_created",
   HELPDESK_TICKET_REPLY: "helpdesk_ticket_reply",
   HELPDESK_TICKET_CLOSED: "helpdesk_ticket_closed",
@@ -26,17 +30,21 @@ export const EMAIL_TEMPLATE_KEYS = {
 
 export const EMAIL_TEMPLATE_DEFINITIONS = [
   { key: EMAIL_TEMPLATE_KEYS.SMTP_TEST, module: "system", type: "verification", name: "SMTP Test Email", trigger: "SMTP connectivity test", supportsAttachments: false, variables: ["user_name", "email", "app_name", "company_name", "support_email", "current_date", "current_time"] },
-  { key: EMAIL_TEMPLATE_KEYS.AUTH_REGISTRATION, module: "auth", type: "registration", name: "Registration Email", trigger: "User registration", supportsAttachments: false, variables: ["user_name", "email", "app_name", "support_email"] },
+  { key: EMAIL_TEMPLATE_KEYS.AUTH_REGISTRATION, module: "auth", type: "registration", name: "Registration Email", trigger: "User registration", supportsAttachments: false, variables: ["user_name", "email", "mobile", "app_name", "company_name", "support_email", "login_link"] },
+  { key: EMAIL_TEMPLATE_KEYS.AUTH_WELCOME, module: "auth", type: "welcome", name: "Welcome Email", trigger: "New user welcome", supportsAttachments: false, variables: ["user_name", "email", "mobile", "app_name", "company_name", "support_email", "login_link"] },
+  { key: EMAIL_TEMPLATE_KEYS.AUTH_ACCOUNT_VERIFICATION, module: "auth", type: "verification", name: "Account Verification Email", trigger: "Account/email verification", supportsAttachments: false, variables: ["user_name", "email", "mobile", "otp", "otp_code", "expiry_time", "verification_link", "app_name", "company_name", "support_email"] },
   { key: EMAIL_TEMPLATE_KEYS.AUTH_FORGOT_PASSWORD_OTP, module: "auth", type: "forgot_password", name: "Forgot Password OTP", trigger: "Forgot password OTP request", supportsAttachments: false, variables: ["user_name", "email", "otp", "expiry_time", "reset_link", "support_email"] },
   { key: EMAIL_TEMPLATE_KEYS.AUTH_LOGIN_OTP, module: "auth", type: "otp_verification", name: "Login OTP / Verification", trigger: "Login OTP request", supportsAttachments: false, variables: ["user_name", "email", "otp", "expiry_time", "support_email"] },
-  { key: EMAIL_TEMPLATE_KEYS.INVOICE_GENERATED, module: "invoice", type: "invoice", name: "Invoice Generated", trigger: "Invoice created or resent", supportsAttachments: true, variables: ["invoice_number", "invoice_date", "customer_name", "email", "invoice_amount", "tax_amount", "due_date", "payment_status", "transaction_id", "company_name", "support_email"] },
-  { key: EMAIL_TEMPLATE_KEYS.INVOICE_TEST, module: "invoice", type: "invoice", name: "Test Invoice Email", trigger: "Invoice template test send", supportsAttachments: true, variables: ["invoice_number", "invoice_date", "customer_name", "email", "invoice_amount", "tax_amount", "due_date", "payment_status", "transaction_id", "company_name", "support_email"] },
-  { key: EMAIL_TEMPLATE_KEYS.PAYMENT_SUCCESS, module: "payment", type: "payment_success", name: "Payment Success", trigger: "Payment completed", supportsAttachments: false, variables: ["user_name", "payment_amount", "payment_status", "transaction_id", "plan_name", "expiry_date", "support_email"] },
-  { key: EMAIL_TEMPLATE_KEYS.PAYMENT_REMINDER, module: "payment", type: "reminder", name: "Payment Reminder", trigger: "Payment due reminder", supportsAttachments: false, variables: ["reminder_title", "reminder_date", "description", "invoice_number", "payment_amount", "due_date", "support_email"] },
-  { key: EMAIL_TEMPLATE_KEYS.NOTIFICATION_ANNOUNCEMENT, module: "notification", type: "announcement", name: "Announcement", trigger: "Announcement broadcast", supportsAttachments: false, variables: ["user_name", "title", "message", "publish_date", "button_link"] },
-  { key: EMAIL_TEMPLATE_KEYS.NOTIFICATION_UPDATE, module: "notification", type: "update", name: "Updates", trigger: "Update broadcast", supportsAttachments: false, variables: ["user_name", "title", "message", "publish_date", "button_link"] },
-  { key: EMAIL_TEMPLATE_KEYS.NOTIFICATION_OFFER, module: "notification", type: "offer", name: "Offers / Promotions", trigger: "Offer broadcast", supportsAttachments: false, variables: ["user_name", "offer_name", "offer_code", "discount", "valid_until", "button_link"] },
-  { key: EMAIL_TEMPLATE_KEYS.NOTIFICATION_GENERAL, module: "notification", type: "notification", name: "General Notifications", trigger: "General notification broadcast", supportsAttachments: false, variables: ["user_name", "title", "message", "publish_date", "button_link"] },
+  { key: EMAIL_TEMPLATE_KEYS.INVOICE_GENERATED, module: "invoice", type: "invoice", name: "Invoice Email", trigger: "Invoice created or resent", supportsAttachments: true, variables: ["user_name", "customer_name", "email", "mobile", "invoice_no", "invoice_number", "invoice_date", "amount", "invoice_amount", "payment_amount", "tax_amount", "total_amount", "due_date", "payment_status", "transaction_id", "payment_date", "plan_name", "company_name", "support_email"] },
+  { key: EMAIL_TEMPLATE_KEYS.INVOICE_TEST, module: "invoice", type: "invoice", name: "Test Invoice Email", trigger: "Invoice template test send", supportsAttachments: true, variables: ["user_name", "customer_name", "email", "invoice_no", "invoice_number", "invoice_date", "amount", "invoice_amount", "payment_amount", "tax_amount", "total_amount", "due_date", "payment_status", "transaction_id", "company_name", "support_email"] },
+  { key: EMAIL_TEMPLATE_KEYS.PAYMENT_SUCCESS, module: "payment", type: "payment_success", name: "Payment Success Email", trigger: "Payment completed", supportsAttachments: false, variables: ["user_name", "email", "mobile", "amount", "payment_amount", "payment_status", "transaction_id", "payment_date", "plan_name", "expiry_date", "app_name", "company_name", "support_email", "login_link"] },
+  { key: EMAIL_TEMPLATE_KEYS.PAYMENT_REMINDER, module: "payment", type: "reminder", name: "Reminder Email", trigger: "Payment due reminder", supportsAttachments: false, variables: ["user_name", "email", "reminder_title", "reminder_date", "description", "invoice_no", "invoice_number", "amount", "payment_amount", "due_date", "support_email"] },
+  { key: EMAIL_TEMPLATE_KEYS.NOTIFICATION_ANNOUNCEMENT, module: "notification", type: "announcement", name: "Announcement Email", trigger: "Announcement broadcast", supportsAttachments: true, variables: ["user_name", "email", "title", "message", "announcement_title", "announcement_message", "publish_date", "button_link", "app_name", "company_name", "support_email"] },
+  { key: EMAIL_TEMPLATE_KEYS.NOTIFICATION_UPDATE, module: "notification", type: "update", name: "Updates Email", trigger: "Update broadcast", supportsAttachments: true, variables: ["user_name", "email", "title", "message", "update_title", "update_message", "publish_date", "button_link", "app_name", "company_name", "support_email"] },
+  { key: EMAIL_TEMPLATE_KEYS.NOTIFICATION_OFFER, module: "notification", type: "offer", name: "Offers Email", trigger: "Offer broadcast", supportsAttachments: true, variables: ["user_name", "email", "offer_name", "offer_title", "offer_code", "discount", "offer_discount", "valid_until", "button_link", "app_name", "company_name", "support_email"] },
+  { key: EMAIL_TEMPLATE_KEYS.NOTIFICATION_GENERAL, module: "notification", type: "notification", name: "Notification Email", trigger: "General notification broadcast", supportsAttachments: true, variables: ["user_name", "email", "title", "message", "notification_title", "notification_message", "publish_date", "button_link", "app_name", "company_name", "support_email"] },
+  { key: EMAIL_TEMPLATE_KEYS.NOTIFICATION_REMINDER, module: "notification", type: "reminder", name: "Reminder Email", trigger: "Manual reminder broadcast", supportsAttachments: true, variables: ["user_name", "email", "title", "message", "reminder_title", "reminder_date", "description", "due_date", "expiry_date", "button_link", "app_name", "company_name", "support_email"] },
+  { key: EMAIL_TEMPLATE_KEYS.ADMIN_NOTIFICATION, module: "admin", type: "admin_notification", name: "Admin Notification Email", trigger: "System/admin alert", supportsAttachments: false, variables: ["user_name", "email", "admin_email", "title", "message", "current_date", "current_time", "app_name", "company_name", "support_email"] },
   { key: EMAIL_TEMPLATE_KEYS.HELPDESK_TICKET_CREATED, module: "helpdesk", type: "helpdesk", name: "Ticket Created", trigger: "Helpdesk ticket created", supportsAttachments: false, variables: ["user_name", "email", "ticket_id", "ticket_subject", "ticket_status", "reply_message", "attachment_name", "admin_email", "support_email"] },
   { key: EMAIL_TEMPLATE_KEYS.HELPDESK_TICKET_REPLY, module: "helpdesk", type: "helpdesk", name: "Ticket Reply", trigger: "Helpdesk ticket reply", supportsAttachments: false, variables: ["user_name", "ticket_id", "ticket_subject", "ticket_status", "reply_message", "attachment_name", "support_email"] },
   { key: EMAIL_TEMPLATE_KEYS.HELPDESK_TICKET_CLOSED, module: "helpdesk", type: "helpdesk", name: "Ticket Closed", trigger: "Helpdesk ticket closed", supportsAttachments: false, variables: ["user_name", "ticket_id", "ticket_subject", "ticket_status", "reply_message", "attachment_name", "support_email"] },
@@ -102,6 +110,16 @@ const DEFAULT_COPY: Record<string, { subject: string; textContent: string; htmlC
     textContent: "Hi {{user_name}},\n\nThanks for registering with {{app_name}}. We're excited to have you on board. For support, email {{support_email}}.",
     htmlContent: "<p>Hi {{user_name}},</p><p>Thanks for registering with <strong>{{app_name}}</strong>. We're excited to have you on board.</p><p>For support, email {{support_email}}.</p>",
   },
+  [EMAIL_TEMPLATE_KEYS.AUTH_WELCOME]: {
+    subject: "Welcome to {{app_name}}, {{user_name}}",
+    textContent: "Hi {{user_name}}, welcome to {{app_name}}. You can sign in here: {{login_link}}. Support: {{support_email}}.",
+    htmlContent: "<p>Hi {{user_name}},</p><p>Welcome to <strong>{{app_name}}</strong>.</p><p><a href=\"{{login_link}}\">Sign in</a></p><p>Support: {{support_email}}</p>",
+  },
+  [EMAIL_TEMPLATE_KEYS.AUTH_ACCOUNT_VERIFICATION]: {
+    subject: "Verify your {{app_name}} account",
+    textContent: "Hi {{user_name}}, use OTP {{otp}} to verify your account. It expires in {{expiry_time}}. {{verification_link}}",
+    htmlContent: "<p>Hi {{user_name}},</p><p>Use OTP <strong>{{otp}}</strong> to verify your account. It expires in {{expiry_time}}.</p><p>{{verification_link}}</p>",
+  },
   registration_success_default: {
     subject: "Welcome to {{app_name}}, {{user_name}}!",
     textContent: "Hi {{user_name}},\n\nThanks for registering with {{app_name}}. We're excited to have you on board. For support, email {{support_email}}.",
@@ -141,6 +159,16 @@ const DEFAULT_COPY: Record<string, { subject: string; textContent: string; htmlC
     subject: "{{title}}",
     textContent: "Hi {{user_name}},\n\n{{message}}\n\n{{publish_date}}\n{{button_link}}",
     htmlContent: "<p>Hi {{user_name}},</p><h2>{{title}}</h2><p>{{message}}</p><p>{{publish_date}}</p><p>{{button_link}}</p>",
+  },
+  [EMAIL_TEMPLATE_KEYS.NOTIFICATION_REMINDER]: {
+    subject: "{{reminder_title}}{{title}}",
+    textContent: "Hi {{user_name}},\n\n{{description}}{{message}}\n\nReminder date: {{reminder_date}}\n{{button_link}}",
+    htmlContent: "<p>Hi {{user_name}},</p><h2>{{reminder_title}}{{title}}</h2><p>{{description}}{{message}}</p><p>{{reminder_date}}</p><p>{{button_link}}</p>",
+  },
+  [EMAIL_TEMPLATE_KEYS.ADMIN_NOTIFICATION]: {
+    subject: "{{app_name}} admin alert: {{title}}",
+    textContent: "{{message}}\n\nAdmin: {{admin_email}}\nDate: {{current_date}} {{current_time}}",
+    htmlContent: "<p><strong>{{title}}</strong></p><p>{{message}}</p><p>Admin: {{admin_email}}<br/>Date: {{current_date}} {{current_time}}</p>",
   },
   [EMAIL_TEMPLATE_KEYS.HELPDESK_TICKET_CREATED]: {
     subject: "New support ticket {{ticket_id}}",
@@ -269,14 +297,28 @@ export async function resolveTemplate(templateKey: string) {
 }
 
 export async function ensureDefaultEmailTemplates() {
-  logger.warn("ensureDefaultEmailTemplates is read-only; create templates through the admin template management API");
-  return EMAIL_TEMPLATE_DEFINITIONS.map((definition) => buildTemplateFromDefinition(definition));
+  const synced = [];
+  for (const definition of EMAIL_TEMPLATE_DEFINITIONS) {
+    const existing = await EmailTemplate.findOne({ key: definition.key });
+    if (existing) {
+      existing.module = existing.module || definition.module;
+      existing.type = existing.type || definition.type;
+      existing.variables = existing.variables?.length ? existing.variables : definition.variables;
+      existing.sampleData = existing.sampleData && Object.keys(existing.sampleData).length ? existing.sampleData : sampleEmailVariables();
+      existing.isDefault = existing.isDefault === true;
+      await existing.save();
+      synced.push(existing);
+      continue;
+    }
+    synced.push(await new EmailTemplate(buildTemplateFromDefinition(definition)).save());
+  }
+  return synced;
 }
 
 export const COMMON_EMAIL_VARIABLES = [
   "user_name", "email", "mobile", "app_name", "support_email", "company_name",
-  "invoice_number", "invoice_date", "customer_name", "payment_amount", "invoice_amount", "tax_amount", "convenience_fee", "convenience_fee_gst", "total_amount", "payment_status", "transaction_id",
-  "otp", "otp_code", "otp_expiry", "expiry_time", "reset_link",
+  "invoice_no", "invoice_number", "invoice_date", "customer_name", "amount", "payment_amount", "invoice_amount", "tax_amount", "convenience_fee", "convenience_fee_gst", "total_amount", "payment_status", "transaction_id", "payment_date",
+  "otp", "otp_code", "otp_expiry", "expiry_time", "reset_link", "verification_link", "login_link",
   "expiry_date", "expiry_type", "days_before", "plan_name", "due_date",
   "title", "message", "publish_date", "button_link",
   "offer_name", "offer_title", "offer_code", "discount", "offer_discount", "valid_until",
@@ -304,9 +346,14 @@ export function normalizeEmailVariables(values: Record<string, unknown> = {}) {
   if (normalized.user_name === undefined && normalized.customer_name !== undefined) normalized.user_name = normalized.customer_name;
   if (normalized.invoice_amount === undefined) normalized.invoice_amount = normalized.total_amount || normalized.payment_amount || "";
   if (normalized.total_amount === undefined) normalized.total_amount = normalized.invoice_amount || normalized.payment_amount || "";
+  if (normalized.amount === undefined) normalized.amount = normalized.total_amount || normalized.payment_amount || normalized.invoice_amount || "";
+  if (normalized.invoice_no === undefined) normalized.invoice_no = normalized.invoice_number || "";
+  if (normalized.invoice_number === undefined) normalized.invoice_number = normalized.invoice_no || "";
   if (normalized.expiry_time === undefined) normalized.expiry_time = normalized.otp_expiry || normalized.expiryDate || "";
   if (normalized.otp_expiry === undefined) normalized.otp_expiry = normalized.expiry_time || "";
   if (normalized.reset_link === undefined) normalized.reset_link = "";
+  if (normalized.verification_link === undefined) normalized.verification_link = "";
+  if (normalized.login_link === undefined) normalized.login_link = "";
   if (normalized.title === undefined) normalized.title = normalized.announcement_title || normalized.update_title || normalized.notification_title || "";
   if (normalized.message === undefined) normalized.message = normalized.announcement_message || normalized.update_message || normalized.notification_message || "";
   if (normalized.announcement_title === undefined) normalized.announcement_title = normalized.title || "";
@@ -345,9 +392,11 @@ export function sampleEmailVariables(overrides: Record<string, unknown> = {}) {
     company_name: "Krita NEET JEE",
     support_email: "support@krita.com",
     invoice_number: "INV-TEST-001",
+    invoice_no: "INV-TEST-001",
     invoice_date: now.toLocaleDateString("en-IN"),
     customer_name: "Test Customer",
     payment_amount: "INR 1000.00",
+    amount: "INR 1000.00",
     invoice_amount: "INR 1000.00",
     tax_amount: "INR 180.00",
     convenience_fee: "INR 20.00",
@@ -355,11 +404,14 @@ export function sampleEmailVariables(overrides: Record<string, unknown> = {}) {
     total_amount: "INR 1203.60",
     payment_status: "PAID",
     transaction_id: "pay_test_123456",
+    payment_date: now.toLocaleDateString("en-IN"),
     otp: "123456",
     otp_code: "123456",
     otp_expiry: "10 minutes",
     expiry_time: "10 minutes",
     reset_link: "https://example.com/reset-password",
+    verification_link: "https://example.com/verify-account",
+    login_link: "https://example.com/login",
     due_date: now.toLocaleDateString("en-IN"),
     expiry_date: now.toLocaleDateString("en-IN"),
     expiry_type: "Subscription",

@@ -23,7 +23,7 @@ const EmailTemplateSchema = new Schema<IEmailTemplate>(
   {
     key: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true },
-    type: { type: String, required: true, enum: ["forgot_password", "otp_verification", "welcome", "notification", "offer", "announcement", "update", "invoice", "registration", "verification", "subscription", "payment_success", "reminder", "broadcast", "expiry", "helpdesk"] },
+    type: { type: String, required: true, enum: ["forgot_password", "otp_verification", "welcome", "notification", "offer", "announcement", "update", "invoice", "registration", "verification", "subscription", "payment_success", "reminder", "broadcast", "expiry", "helpdesk", "admin_notification"] },
     module: { type: String, default: "notification", index: true },
     description: { type: String, default: "" },
     subject: { type: String, required: true },

@@ -19,6 +19,9 @@ export interface IUserNotification extends Document {
   senderName?: string;
   emailStatus?: string;
   emailError?: string;
+  pushStatus?: string;
+  pushError?: string;
+  emailTemplateKey?: string;
   sentAt?: Date;
   readAt?: Date;
   createdAt: Date;
@@ -44,6 +47,9 @@ const userNotificationSchema = new Schema<IUserNotification>(
     senderName: { type: String, default: "" },
     emailStatus: { type: String, default: "" },
     emailError: { type: String, default: "" },
+    pushStatus: { type: String, default: "" },
+    pushError: { type: String, default: "" },
+    emailTemplateKey: { type: String, default: "", index: true },
     sentAt: Date,
     readAt: Date,
   },

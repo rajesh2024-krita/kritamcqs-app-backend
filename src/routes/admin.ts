@@ -39,7 +39,7 @@ import { requireAdmin } from "../middlewares/auth";
 import { resolveDifficultySelection } from "../lib/difficulties";
 import { getExamTypeLabel, normalizeQuestionDocument } from "../lib/question-framework";
 import { generateInvoiceForSubscription, getActiveInvoiceTemplate, getInvoiceSettings, getNotificationSettings, processExpiryReminders, regenerateInvoicePdf, renderInvoicePdf } from "../lib/invoices";
-import { COMMON_EMAIL_VARIABLES, EMAIL_TEMPLATE_DEFINITIONS, EMAIL_TEMPLATE_KEYS, buildTemplatePreview, extractTemplateVariables, resolveTemplate, sampleEmailVariables, sendTemplatedEmail, templateVariablesFor, validateTemplateVariables } from "../lib/email-templates";
+import { COMMON_EMAIL_VARIABLES, EMAIL_TEMPLATE_DEFINITIONS, EMAIL_TEMPLATE_KEYS, buildTemplateFromDefinition, buildTemplatePreview, ensureDefaultEmailTemplates, extractTemplateVariables, resolveTemplate, sampleEmailVariables, sendTemplatedEmail, templateVariablesFor, validateTemplateVariables } from "../lib/email-templates";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -2480,7 +2480,26 @@ function notificationTemplateKey(type: string) {
   if (normalized.includes("announcement")) return EMAIL_TEMPLATE_KEYS.NOTIFICATION_ANNOUNCEMENT;
   if (normalized.includes("update")) return EMAIL_TEMPLATE_KEYS.NOTIFICATION_UPDATE;
   if (normalized.includes("offer") || normalized.includes("promotion")) return EMAIL_TEMPLATE_KEYS.NOTIFICATION_OFFER;
+  if (normalized.includes("reminder")) return EMAIL_TEMPLATE_KEYS.NOTIFICATION_REMINDER;
   return EMAIL_TEMPLATE_KEYS.NOTIFICATION_GENERAL;
+}
+
+function normalizeDeliveryMode(value: unknown) {
+  const mode = String(value || "notification").trim().toLowerCase();
+  if (["app", "in_app", "notification"].includes(mode)) return "notification";
+  if (["email"].includes(mode)) return "email";
+  if (["push"].includes(mode)) return "push";
+  if (["email_push", "email+push"].includes(mode)) return "email_push";
+  if (["both", "app_email", "notification_email"].includes(mode)) return "both";
+  return "notification";
+}
+
+function deliveryFlags(mode: string, settings: any) {
+  return {
+    inApp: ["notification", "both"].includes(mode) && settings.inAppEnabled !== false,
+    email: ["email", "both", "email_push"].includes(mode) && settings.emailEnabled !== false,
+    push: ["push", "email_push"].includes(mode),
+  };
 }
 
 function parseVariables(input: unknown) {
@@ -2577,10 +2596,28 @@ async function notificationAttachment(file?: Express.Multer.File) {
   return [{ filename: file.originalname || "attachment", contentType: file.mimetype, content: file.buffer }];
 }
 
-router.post("/notifications/send", upload.single("attachment"), wrap(async (req, res) => {
+router.get("/notifications", wrap(async (req, res) => {
+  const query = req.query as Record<string, unknown>;
+  const { page, limit, skip } = getPagination(query);
+  const filters = { ...exactFilter(query, ["type", "targetGroup", "deliveryMode", "emailStatus"]), ...buildSearchFilter(query, ["title", "body", "userId", "emailTemplateKey"]) };
+  const [items, total] = await Promise.all([
+    UserNotification.find(filters).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    UserNotification.countDocuments(filters),
+  ]);
+  const userIds = [...new Set(items.map((item: any) => String(item.userId)).filter(Boolean))];
+  const users = userIds.length ? await User.find({ _id: { $in: userIds } }).select("_id name email mobile") : [];
+  const userMap = new Map(users.map((user: any) => [String(user._id), serializeUser(user)]));
+  sendSuccess(res, items.map((item: any) => ({ ...item.toJSON(), user: userMap.get(String(item.userId)) || null })), {
+    meta: { total, page, limit, totalPages: Math.max(Math.ceil(total / limit), 1) },
+  });
+}));
+
+router.post(["/notifications/send", "/notifications/broadcast"], upload.single("attachment"), wrap(async (req, res) => {
   const settings = await getNotificationSettings();
   const body = req.body ?? {};
   const type = String(body.type || "notification").trim();
+  const deliveryMode = normalizeDeliveryMode(body.deliveryMode);
+  const flags = deliveryFlags(deliveryMode, settings);
   const title = String(body.title || body.notification_title || "").trim();
   const message = String(body.message || body.body || body.notification_message || "").trim();
   if (!title || !message) throw Object.assign(new Error("Notification title and message are required"), { statusCode: 400 });
@@ -2600,9 +2637,14 @@ router.post("/notifications/send", upload.single("attachment"), wrap(async (req,
     title,
     body: message,
     dedupeKey: `${dedupePrefix}-${String(user._id)}`,
-    visibleInApp: settings.inAppEnabled !== false,
+    visibleInApp: flags.inApp,
+    linkUrl: String(body.linkUrl || body.buttonLink || body.button_link || ""),
     targetGroup: String(body.targetGroup || ""),
-    deliveryMode: settings.emailEnabled ? "both" : "notification",
+    deliveryMode,
+    notificationStatus: flags.inApp ? "created" : "skipped",
+    pushStatus: flags.push ? "unsupported" : "",
+    pushError: flags.push ? "Push provider is not configured" : "",
+    emailTemplateKey: flags.email ? String(body.templateKey || notificationTemplateKey(type)) : "",
     senderId: String((req as any).admin?._id || ""),
     senderName: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
   }));
@@ -2611,11 +2653,18 @@ router.post("/notifications/send", upload.single("attachment"), wrap(async (req,
   let emailSkipped = 0;
   const attachments = await notificationAttachment(req.file);
   const variables = parseVariables(body.variables);
-  if (settings.emailEnabled) {
+  if (flags.email) {
     const templateKey = String(body.templateKey || notificationTemplateKey(type));
+    const notificationByUser = new Map(notifications.map((item: any) => [String(item.userId), item]));
     for (const user of users) {
+      const notification = notificationByUser.get(String(user._id));
       if (!user.email) {
         emailSkipped += 1;
+        if (notification) {
+          notification.emailStatus = "skipped";
+          notification.emailError = "User email missing";
+          await notification.save();
+        }
         continue;
       }
       try {
@@ -2643,14 +2692,35 @@ router.post("/notifications/send", upload.single("attachment"), wrap(async (req,
           current_time: now.toLocaleTimeString("en-IN"),
           ...variables,
         }, attachments);
-        if (result.skipped) emailSkipped += 1;
-        else emailSent += 1;
-      } catch {
+        if (result.skipped) {
+          emailSkipped += 1;
+          if (notification) {
+            notification.emailStatus = "skipped";
+            notification.emailError = String(result.reason || "Email skipped");
+            await notification.save();
+          }
+        } else {
+          emailSent += 1;
+          if (notification) {
+            notification.emailStatus = "sent";
+            notification.emailError = "";
+            notification.sentAt = new Date();
+            await notification.save();
+          }
+        }
+      } catch (error) {
         emailSkipped += 1;
+        if (notification) {
+          notification.emailStatus = "failed";
+          notification.emailError = error instanceof Error ? error.message : "Email failed";
+          await notification.save();
+        }
       }
     }
+  } else if (notifications.length) {
+    await UserNotification.updateMany({ _id: { $in: notifications.map((item: any) => item._id) } }, { $set: { emailStatus: "skipped", emailError: "Email delivery not selected" } });
   }
-  sendSuccess(res, { notificationsCreated: notifications.length, emailSent, emailSkipped }, { status: 201, message: "Notification processed" });
+  sendSuccess(res, { totalRecipients: users.length, notificationsCreated: notifications.length, emailSent, emailSkipped, pushUnsupported: flags.push ? users.length : 0 }, { status: 201, message: "Notification processed" });
 }));
 
 router.get("/helpdesk-settings", wrap(async (_req, res) => {
@@ -2790,18 +2860,71 @@ router.get("/email-templates/catalog", wrap(async (_req, res) => {
   sendSuccess(res, {
     modules: [...new Set(EMAIL_TEMPLATE_DEFINITIONS.map((item) => item.module))],
     types: [...new Set(EMAIL_TEMPLATE_DEFINITIONS.map((item) => item.type))],
-    templates: EMAIL_TEMPLATE_DEFINITIONS.map((item) => ({
-      ...item,
-      placeholders: item.variables.map((name) => `{{${name}}}`),
-      sampleData: sampleEmailVariables(),
-      status: statusMap[item.key] || { exists: false, isActive: false },
-    })),
+    templates: EMAIL_TEMPLATE_DEFINITIONS.map((item) => {
+      const defaultTemplate = buildTemplateFromDefinition(item);
+      return {
+        ...item,
+        subject: defaultTemplate.subject,
+        htmlContent: defaultTemplate.htmlContent,
+        textContent: defaultTemplate.textContent,
+        placeholders: item.variables.map((name) => `{{${name}}}`),
+        sampleData: sampleEmailVariables(),
+        status: statusMap[item.key] || { exists: false, isActive: false },
+      };
+    }),
     mappings: EMAIL_TEMPLATE_DEFINITIONS.reduce((acc: Record<string, any>, item) => {
       acc[item.key] = { module: item.module, type: item.type, variables: item.variables, placeholders: item.variables.map((name) => `{{${name}}}`) };
       return acc;
     }, {}),
     variables: COMMON_EMAIL_VARIABLES,
     sampleData: sampleEmailVariables(),
+  });
+}));
+
+router.post("/email-templates/sync-defaults", wrap(async (_req, res) => {
+  const templates = await ensureDefaultEmailTemplates();
+  sendSuccess(res, { synced: templates.length }, { message: "System email templates synced" });
+}));
+
+router.get("/email-templates/audit", wrap(async (_req, res) => {
+  const templates = await EmailTemplate.find({ key: { $in: EMAIL_TEMPLATE_DEFINITIONS.map((item) => item.key) } });
+  const templateMap = new Map(templates.map((template: any) => [String(template.key), template]));
+  const hardcodedLocations = [
+    { file: "App/api-server/lib/db/src/models/AuthSettings.ts", note: "Legacy reset OTP subject/body fields remain for backward settings compatibility; runtime uses auth_forgot_password_otp." },
+    { file: "App/api-server/src/lib/invoices.ts", note: "Reminder title/body are in-app notification copy; email delivery uses subscription templates." },
+  ];
+  const modules = EMAIL_TEMPLATE_DEFINITIONS.map((definition) => {
+    const template: any = templateMap.get(definition.key);
+    const status = !template ? "Missing" : template.isActive === false ? "Broken" : "Working";
+    return {
+      moduleName: definition.module,
+      functionality: definition.name,
+      emailTriggerEvent: definition.trigger || `${definition.module} ${definition.type}`,
+      templateKey: definition.key,
+      connectedModule: definition.module,
+      supportedVariables: definition.variables,
+      status,
+      reason: !template ? "Template has not been created in database" : template.isActive === false ? "Template is disabled" : "Template exists and is active",
+      lastUpdated: template?.updatedAt || null,
+    };
+  });
+  const summary = modules.reduce((acc: Record<string, number>, item) => {
+    acc[item.status] = Number(acc[item.status] || 0) + 1;
+    return acc;
+  }, {});
+  sendSuccess(res, {
+    generatedAt: new Date(),
+    summary,
+    modules,
+    hardcodedLocations,
+    sendingModules: [
+      { moduleName: "auth", functionality: "registration, Google first login, forgot password", templateKeys: [EMAIL_TEMPLATE_KEYS.AUTH_REGISTRATION, EMAIL_TEMPLATE_KEYS.AUTH_FORGOT_PASSWORD_OTP] },
+      { moduleName: "subscription", functionality: "payment success and invoice generation", templateKeys: [EMAIL_TEMPLATE_KEYS.PAYMENT_SUCCESS, EMAIL_TEMPLATE_KEYS.INVOICE_GENERATED] },
+      { moduleName: "invoice", functionality: "invoice send, payment reminder, invoice test", templateKeys: [EMAIL_TEMPLATE_KEYS.INVOICE_GENERATED, EMAIL_TEMPLATE_KEYS.PAYMENT_REMINDER, EMAIL_TEMPLATE_KEYS.INVOICE_TEST] },
+      { moduleName: "notification", functionality: "admin broadcast notifications", templateKeys: [EMAIL_TEMPLATE_KEYS.NOTIFICATION_GENERAL, EMAIL_TEMPLATE_KEYS.NOTIFICATION_ANNOUNCEMENT, EMAIL_TEMPLATE_KEYS.NOTIFICATION_UPDATE, EMAIL_TEMPLATE_KEYS.NOTIFICATION_OFFER, EMAIL_TEMPLATE_KEYS.NOTIFICATION_REMINDER] },
+      { moduleName: "helpdesk", functionality: "ticket created, auto reply, reply, close", templateKeys: [EMAIL_TEMPLATE_KEYS.HELPDESK_TICKET_CREATED, EMAIL_TEMPLATE_KEYS.HELPDESK_AUTO_REPLY, EMAIL_TEMPLATE_KEYS.HELPDESK_TICKET_REPLY, EMAIL_TEMPLATE_KEYS.HELPDESK_TICKET_CLOSED] },
+      { moduleName: "subscription-reminder", functionality: "expiry, renewal, expired reminders", templateKeys: [EMAIL_TEMPLATE_KEYS.SUBSCRIPTION_EXPIRY_REMINDER, EMAIL_TEMPLATE_KEYS.SUBSCRIPTION_RENEWAL_REMINDER, EMAIL_TEMPLATE_KEYS.SUBSCRIPTION_EXPIRED] },
+    ],
   });
 }));
 

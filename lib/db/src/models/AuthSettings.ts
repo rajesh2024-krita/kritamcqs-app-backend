@@ -33,8 +33,8 @@ const AuthSettingsSchema = new Schema<IAuthSettings>(
     resetOtpExpiryMinutes: { type: Number, default: 10, min: 1, max: 60 },
     resetOtpMaxAttempts: { type: Number, default: 5, min: 1, max: 10 },
     resetOtpMaxResends: { type: Number, default: 3, min: 1, max: 10 },
-    resetOtpEmailSubject: { type: String, default: "Krita password reset OTP" },
-    resetOtpEmailTemplate: { type: String, default: "Your Krita password reset OTP is {{otp}}. It expires in {{expiryMinutes}} minutes." },
+    resetOtpEmailSubject: { type: String, default: "" },
+    resetOtpEmailTemplate: { type: String, default: "" },
   },
   {
     timestamps: true,
