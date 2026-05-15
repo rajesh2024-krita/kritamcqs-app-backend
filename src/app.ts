@@ -26,7 +26,25 @@ app.use(
     },
   }),
 );
-app.use(cors());
+// app.use(cors());
+const allowedOrigins = env.clientOrigin
+  .split(",")
+  .map((origin) => origin.trim());
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error(`CORS blocked: ${origin}`));
+      }
+    },
+    credentials: true,
+  })
+);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.resolve(process.cwd(), "uploads")));
