@@ -149,10 +149,13 @@ async function buildNotifications(
 ) {
   const page = Math.max(1, Number(options.page || 1));
   const limit = Math.min(50, Math.max(1, Number(options.limit || 20)));
-  const notifications: Array<{ id: string; title: string; body: string; type: string; createdAt: string; isRead: boolean; linkUrl: string }> = [];
+  const generatedNotifications: Array<{ id: string; title: string; body: string; type: string; createdAt: string; isRead: boolean; linkUrl: string }> = [];
+  const typeFilter = String(options.type || "").trim();
+  const statusFilter = String(options.status || "").trim();
+  const dateFilter = String(options.date || "").trim();
 
   if (!user.isPremium) {
-    notifications.push({
+    generatedNotifications.push({
       id: "free-daily-limit",
       title: "Daily Practice Reminder",
       body: `${remainingToday ?? 0} questions remaining in today's free plan quota.`,
@@ -164,7 +167,7 @@ async function buildNotifications(
   }
 
   if (weakTopicsCount > 0) {
-    notifications.push({
+    generatedNotifications.push({
       id: "weak-topics",
       title: "Weak Areas Need Attention",
       body: `${weakTopicsCount} weak chapters are ready for focused practice.`,
@@ -176,7 +179,7 @@ async function buildNotifications(
   }
 
   if (revisionPendingCount > 0) {
-    notifications.push({
+    generatedNotifications.push({
       id: "revision-ready",
       title: "Revision Queue Ready",
       body: `${revisionPendingCount} revision questions are available for today.`,
@@ -191,7 +194,7 @@ async function buildNotifications(
     const msLeft = new Date(user.premiumExpiresAt).getTime() - Date.now();
     const daysLeft = Math.ceil(msLeft / (1000 * 60 * 60 * 24));
     if (daysLeft <= 5 && daysLeft >= 0) {
-      notifications.push({
+      generatedNotifications.push({
         id: "subscription-ending",
         title: "Plan Ending Soon",
         body: `Your premium plan expires in ${daysLeft} day${daysLeft === 1 ? "" : "s"}. Renew to keep unlimited access.`,
@@ -205,7 +208,7 @@ async function buildNotifications(
 
   const latestAttempt = await SessionAttempt.findOne({ userId, completedAt: { $ne: null } }).sort({ completedAt: -1 });
   if (latestAttempt) {
-    notifications.push({
+    generatedNotifications.push({
       id: "latest-result",
       title: "Latest Test Result Saved",
       body: `Your latest score is ${latestAttempt.score ?? 0} with ${Math.round(latestAttempt.accuracy ?? 0)}% accuracy.`,
@@ -217,9 +220,6 @@ async function buildNotifications(
   }
 
   const storedFilter = { userId, visibleInApp: { $ne: false } };
-  const typeFilter = String(options.type || "").trim();
-  const statusFilter = String(options.status || "").trim();
-  const dateFilter = String(options.date || "").trim();
   if (typeFilter && typeFilter !== "all") {
     (storedFilter as any).type = typeFilter;
   }
@@ -238,6 +238,26 @@ async function buildNotifications(
       (storedFilter as any).createdAt = { $gte: start, $lt: end };
     }
   }
+  const matchesGeneratedFilters = (item: { type: string; isRead: boolean; createdAt: string }) => {
+    if (typeFilter && typeFilter !== "all" && item.type !== typeFilter) return false;
+    if (statusFilter === "read" && !item.isRead) return false;
+    if (statusFilter === "unread" && item.isRead) return false;
+    if (dateFilter) {
+      const selected = new Date(dateFilter);
+      const createdAt = new Date(item.createdAt);
+      if (Number.isNaN(selected.getTime()) || Number.isNaN(createdAt.getTime())) return false;
+      if (
+        selected.getFullYear() !== createdAt.getFullYear()
+        || selected.getMonth() !== createdAt.getMonth()
+        || selected.getDate() !== createdAt.getDate()
+      ) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const filteredGeneratedNotifications = generatedNotifications.filter(matchesGeneratedFilters);
+
   const [storedNotifications, storedTotal, storedUnread] = await Promise.all([
     UserNotification.find(storedFilter)
       .sort({ createdAt: -1 })
@@ -264,11 +284,12 @@ async function buildNotifications(
       notificationStatus: item.notificationStatus || "",
       createdAt: item.createdAt.toISOString(),
       })),
-      ...(page === 1 ? notifications : []),
+      ...(page === 1 ? filteredGeneratedNotifications : []),
     ],
+    count: storedUnread,
     unreadCount: storedUnread,
-    total: storedTotal + (page === 1 ? notifications.length : 0),
-    meta: { page, limit, total: storedTotal, pages: Math.max(1, Math.ceil(storedTotal / limit)) },
+    total: storedTotal + filteredGeneratedNotifications.length,
+    meta: { page, limit, total: storedTotal + filteredGeneratedNotifications.length, pages: Math.max(1, Math.ceil((storedTotal + filteredGeneratedNotifications.length) / limit)) },
   };
 }
 

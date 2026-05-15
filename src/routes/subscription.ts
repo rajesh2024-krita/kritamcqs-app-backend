@@ -8,6 +8,8 @@ import { generateInvoiceForSubscription, getInvoiceSettings, regenerateInvoicePd
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 
 const router: IRouter = Router();
+const RENEWAL_WINDOW_DAYS = 5;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function mapPlan(plan: any) {
   if (!plan) return null;
@@ -48,6 +50,25 @@ async function getRazorpaySettings() {
   }
 
   return { keyId, keySecret };
+}
+
+async function assertRenewalAllowed(userId: string) {
+  const current = await Subscription.findOne({
+    userId,
+    status: "active",
+    $or: [{ endDate: { $exists: false } }, { endDate: null }, { endDate: { $gte: new Date() } }],
+  }).sort({ endDate: -1, createdAt: -1 });
+
+  if (!current) return;
+
+  if (!current.endDate) {
+    throw new Error("Your current premium plan is active. Renewal opens when 5 days or less remain before expiry.");
+  }
+
+  const daysRemaining = Math.ceil((new Date(current.endDate).getTime() - Date.now()) / DAY_MS);
+  if (daysRemaining > RENEWAL_WINDOW_DAYS) {
+    throw new Error("Your current premium plan is active. Renewal opens when 5 days or less remain before expiry.");
+  }
 }
 
 function razorpayAuthHeader(keyId: string, keySecret: string) {
@@ -336,6 +357,7 @@ router.get("/invoices/:id/pdf", requireAuth, async (req: AuthenticatedRequest, r
 router.post("/create-order", requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const body = CreateOrderBody.parse(req.body);
+    await assertRenewalAllowed(String(req.userId));
     const plan = await getSubscriptionPlan(body.planId);
     const { pricing } = await resolveCoupon(plan, body.couponCode);
     const amountInPaise = Math.round(Number(pricing.finalAmount || 0) * 100);
