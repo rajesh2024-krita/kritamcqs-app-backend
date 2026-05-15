@@ -27,24 +27,31 @@ app.use(
   }),
 );
 // app.use(cors());
-const allowedOrigins = env.clientOrigin
-  .split(",")
-  .map((origin) => origin.trim());
+const allowedOrigins = [
+  "http://localhost",
+  "https://localhost",
+  "capacitor://localhost",
+  "http://localhost:5173",
+  "http://admin.kritamcqs.com",
+  "https://admin.kritamcqs.com",
+];
 
 app.use(
   cors({
     origin: function (origin, callback) {
+      // allow requests with no origin (mobile apps, postman, curl)
       if (!origin) return callback(null, true);
 
       if (allowedOrigins.includes(origin)) {
         callback(null, true);
       } else {
-        callback(new Error(`CORS blocked: ${origin}`));
+        callback(new Error(`CORS not allowed for origin: ${origin}`));
       }
     },
     credentials: true,
   })
 );
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use("/uploads", express.static(path.resolve(process.cwd(), "uploads")));
