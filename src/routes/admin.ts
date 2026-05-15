@@ -39,7 +39,7 @@ import { requireAdmin } from "../middlewares/auth";
 import { resolveDifficultySelection } from "../lib/difficulties";
 import { getExamTypeLabel, normalizeQuestionDocument } from "../lib/question-framework";
 import { generateInvoiceForSubscription, getActiveInvoiceTemplate, getInvoiceSettings, getNotificationSettings, processExpiryReminders, regenerateInvoicePdf, renderInvoicePdf } from "../lib/invoices";
-import { COMMON_EMAIL_VARIABLES, EMAIL_TEMPLATE_DEFINITIONS, EMAIL_TEMPLATE_KEYS, buildTemplateFromDefinition, buildTemplatePreview, ensureDefaultEmailTemplates, extractTemplateVariables, resolveTemplate, sampleEmailVariables, sendTemplatedEmail, templateVariablesFor, validateTemplateVariables } from "../lib/email-templates";
+import { COMMON_EMAIL_VARIABLES, EMAIL_TEMPLATE_DEFINITIONS, EMAIL_TEMPLATE_KEYS, buildTemplateFromDefinition, buildTemplatePreview, extractTemplateVariables, resolveTemplate, sampleEmailVariables, sendTemplatedEmail, templateVariablesFor, validateTemplateVariables } from "../lib/email-templates";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -973,9 +973,9 @@ function inferImageExtension(urlValue: string, contentType = "") {
   return ".jpg";
 }
 
-async function saveQuestionAsset(buffer: Buffer, extension: string, seed: string) {
+async function saveQuestionAsset(buffer: Buffer, extension: string, hashInput: string) {
   await fs.mkdir(QUESTION_ASSET_DIR, { recursive: true });
-  const filename = `${crypto.createHash("sha1").update(seed).digest("hex")}${extension}`;
+  const filename = `${crypto.createHash("sha1").update(hashInput).digest("hex")}${extension}`;
   const absolutePath = path.join(QUESTION_ASSET_DIR, filename);
   await fs.writeFile(absolutePath, buffer);
   return `/uploads/question-assets/${filename}`;
@@ -1370,8 +1370,8 @@ router.get("/users/:id/overview", wrap(async (req, res) => {
 router.post("/questions/upload-asset", upload.single("image"), wrap(async (req, res) => {
   if (!req.file?.buffer) throw Object.assign(new Error("Image file is required"), { statusCode: 400 });
   const extension = inferImageExtension(req.file.originalname || "", req.file.mimetype || "");
-  const seed = `${req.file.originalname || "question-asset"}-${Date.now()}-${Math.random()}`;
-  const assetPath = await saveQuestionAsset(req.file.buffer, extension, seed);
+  const hashInput = `${req.file.originalname || "question-asset"}-${Date.now()}-${Math.random()}`;
+  const assetPath = await saveQuestionAsset(req.file.buffer, extension, hashInput);
   sendSuccess(res, {
     path: assetPath,
     url: toPublicImageUrl(req, assetPath),
@@ -2879,11 +2879,6 @@ router.get("/email-templates/catalog", wrap(async (_req, res) => {
     variables: COMMON_EMAIL_VARIABLES,
     sampleData: sampleEmailVariables(),
   });
-}));
-
-router.post("/email-templates/sync-defaults", wrap(async (_req, res) => {
-  const templates = await ensureDefaultEmailTemplates();
-  sendSuccess(res, { synced: templates.length }, { message: "System email templates synced" });
 }));
 
 router.get("/email-templates/audit", wrap(async (_req, res) => {

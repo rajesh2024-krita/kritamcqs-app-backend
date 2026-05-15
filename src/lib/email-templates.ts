@@ -296,25 +296,6 @@ export async function resolveTemplate(templateKey: string) {
   return buildTemplateFromDefinition(definition);
 }
 
-export async function ensureDefaultEmailTemplates() {
-  const synced = [];
-  for (const definition of EMAIL_TEMPLATE_DEFINITIONS) {
-    const existing = await EmailTemplate.findOne({ key: definition.key });
-    if (existing) {
-      existing.module = existing.module || definition.module;
-      existing.type = existing.type || definition.type;
-      existing.variables = existing.variables?.length ? existing.variables : definition.variables;
-      existing.sampleData = existing.sampleData && Object.keys(existing.sampleData).length ? existing.sampleData : sampleEmailVariables();
-      existing.isDefault = existing.isDefault === true;
-      await existing.save();
-      synced.push(existing);
-      continue;
-    }
-    synced.push(await new EmailTemplate(buildTemplateFromDefinition(definition)).save());
-  }
-  return synced;
-}
-
 export const COMMON_EMAIL_VARIABLES = [
   "user_name", "email", "mobile", "app_name", "support_email", "company_name",
   "invoice_no", "invoice_number", "invoice_date", "customer_name", "amount", "payment_amount", "invoice_amount", "tax_amount", "convenience_fee", "convenience_fee_gst", "total_amount", "payment_status", "transaction_id", "payment_date",

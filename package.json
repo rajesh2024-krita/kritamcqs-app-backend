@@ -7,8 +7,7 @@
     "dev": "node ./build.mjs && node --enable-source-maps ./dist/index.mjs",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "seed:subscription-plan": "node ./scripts/seed-subscription-plan.mjs"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "cookie-parser": "^1.4.7",

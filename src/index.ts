@@ -1,8 +1,6 @@
 import { connect } from "@api/db";
 import app from "./app";
-import { syncDifficultyCatalog } from "./lib/difficulty-catalog";
 import { logger } from "./lib/logger";
-import { syncQuestionTypeCatalog } from "./lib/question-type-catalog";
 import 'dotenv/config';
 import { createServer } from "node:http";
 import { startExpiryReminderWorker } from "./lib/invoices";
@@ -62,8 +60,6 @@ async function listenWithFallback(preferredPort: number) {
 (async () => {
   try {
     await connect();
-    await syncDifficultyCatalog();
-    await syncQuestionTypeCatalog();
     startExpiryReminderWorker();
     logger.info("Connected to MongoDB");
   } catch (err) {
