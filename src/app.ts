@@ -32,8 +32,10 @@ const allowedOrigins = [
   "https://localhost",
   "capacitor://localhost",
   "http://localhost:5173",
+  "http://localhost:5174",
   "http://admin.kritamcqs.com",
   "https://admin.kritamcqs.com",
+  "http://localhost:3000",
 ];
 
 app.use(

@@ -1,16 +1,20 @@
 import { Router, type IRouter } from "express";
 import { Question, Year } from "@api/db";
 import { requireAuth } from "../middlewares/auth";
-import { getQuestionExamModes } from "../lib/subjects";
 
 const router: IRouter = Router();
 
+function buildPaperModeFilter(mode: string) {
+  if (!mode) return {};
+  if (mode === "NEET") return { $or: [{ examMode: "NEET" }, { exam: "NEET" }] };
+  if (mode === "JEE") return { $or: [{ examMode: "JEE" }, { exam: { $in: ["JEE", "JEE_MAIN", "JEE_ADVANCED"] } }] };
+  if (mode === "BOTH") return { examMode: "BOTH" };
+  return { examMode: mode };
+}
+
 router.get("/", requireAuth, async (req, res) => {
   const mode = String(req.query["mode"] || "");
-  const examModes = getQuestionExamModes(mode);
-  const questionFilter = examModes.length
-    ? { examMode: examModes.length === 1 ? examModes[0] : { $in: examModes } }
-    : {};
+  const questionFilter = buildPaperModeFilter(mode);
   const [items, yearValues] = await Promise.all([
     Year.find({}).sort({ value: -1 }),
     Question.distinct("year", { ...questionFilter, year: { $ne: null } }),

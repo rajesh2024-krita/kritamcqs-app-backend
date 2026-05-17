@@ -27,8 +27,18 @@ function buildFlexibleIdMatch(field: "chapterId" | "subjectId", ids?: Array<stri
   return { $expr: { $in: [{ $toString: `$${field}` }, normalizedIds] } };
 }
 
+function buildPaperModeMatch(mode?: string, exactMode?: string) {
+  if (!mode) return undefined;
+  if (mode === "NEET") return { $or: [{ examMode: "NEET" }, { exam: "NEET" }] };
+  if (mode === "JEE") return { $or: [{ examMode: "JEE" }, { exam: { $in: ["JEE", "JEE_MAIN", "JEE_ADVANCED"] } }] };
+  if (exactMode === "true") return { examMode: mode };
+  const examModes = getQuestionExamModes(mode);
+  if (examModes.length === 0) return undefined;
+  return { examMode: examModes.length === 1 ? examModes[0] : { $in: examModes } };
+}
+
 router.get("/", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
-  const { subjectId, chapterId, difficulty, limit, mode, exam, questionType, subject, isNumerical, hasDiagram } =
+  const { subjectId, chapterId, difficulty, limit, mode, exam, questionType, subject, isNumerical, hasDiagram, exactMode } =
     req.query as Record<string, string>;
   const filter: Record<string, unknown> = {};
   const aggregateClauses: Record<string, unknown>[] = [];
@@ -47,10 +57,8 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
   }
   const difficultyFilter = await buildDifficultyQuery(difficulty);
   if (difficultyFilter) aggregateClauses.push(difficultyFilter);
-  const examModes = getQuestionExamModes(mode);
-  if (examModes.length > 0) {
-    aggregateClauses.push({ examMode: examModes.length === 1 ? examModes[0] : { $in: examModes } });
-  }
+  const modeMatch = buildPaperModeMatch(mode, exactMode);
+  if (modeMatch) aggregateClauses.push(modeMatch);
   if (exam) aggregateClauses.push({ exam });
   if (questionType) aggregateClauses.push({ questionType });
   if (normalizedSubject) {
@@ -72,7 +80,7 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
 
   const questionIds = await Question.aggregate([
     { $match: aggregateMatch },
-    { $limit: limit ? parseInt(limit) : 20 },
+    { $limit: limit ? parseInt(limit) : 500 },
     { $project: { _id: 1 } },
   ]);
   const orderedIds = questionIds.map((item: any) => item._id);
@@ -185,5 +193,8 @@ async function parseQuestionPayload(body: Record<string, any>) {
     correctOptions: Array.isArray(body.correctOptions) ? body.correctOptions.map(String) : [],
     passage: body.passage ? String(body.passage) : undefined,
     year: body.year ? Number(body.year) : undefined,
+    batch: body.batch ? String(body.batch) : undefined,
+    batchLabel: body.batchLabel ? String(body.batchLabel) : undefined,
+    batchYear: body.batchYear ? String(body.batchYear) : undefined,
   };
 }

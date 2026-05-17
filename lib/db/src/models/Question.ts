@@ -34,6 +34,9 @@ export interface IQuestion extends Document {
   correctOptions?: string[];
   passage?: string;
   year?: number;
+  batch?: string;
+  batchLabel?: string;
+  batchYear?: string | number;
   createdAt: Date;
 }
 
@@ -71,6 +74,9 @@ const QuestionSchema = new Schema<IQuestion>(
     correctOptions: { type: [String], default: [] },
     passage: String,
     year: Number,
+    batch: String,
+    batchLabel: String,
+    batchYear: Schema.Types.Mixed,
   },
   {
     timestamps: true,
