@@ -26,17 +26,24 @@ app.use(
     },
   }),
 );
-// app.use(cors());
-const allowedOrigins = [
+const defaultAllowedOrigins = [
   "http://localhost",
   "https://localhost",
   "capacitor://localhost",
   "http://localhost:5173",
   "http://localhost:5174",
+  "https://kritamcqs.com",
+  "https://www.kritamcqs.com",
+  "https://app.kritamcqs.com",
   "http://admin.kritamcqs.com",
   "https://admin.kritamcqs.com",
   "http://localhost:3000",
 ];
+const configuredAllowedOrigins = String(process.env["CLIENT_ORIGIN"] || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...configuredAllowedOrigins])];
 
 app.use(
   cors({

@@ -9,6 +9,7 @@ const router: IRouter = Router();
 const JWT_SECRET = process.env["SESSION_SECRET"] ?? "krita-secret-key";
 
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
+const googleCertCache: { certs: Record<string, string>; expiresAt: number } = { certs: {}, expiresAt: 0 };
 
 function checkRateLimit(key: string, maxAttempts = 8, windowMs = 15 * 60 * 1000) {
   const now = Date.now();
@@ -58,14 +59,14 @@ async function getAuthSettings() {
 }
 
 function getGoogleClientIds(settings: any) {
-  return [
+  return [...new Set([
     settings?.googleClientId,
     settings?.googleAndroidClientId,
     process.env["GOOGLE_WEB_CLIENT_ID"],
     process.env["GOOGLE_ANDROID_CLIENT_ID"],
   ]
     .map((value) => String(value || "").trim())
-    .filter(Boolean);
+    .filter(Boolean))];
 }
 
 function looksLikeConfiguredAndroidClientId(value: unknown, settings: any) {
@@ -84,6 +85,41 @@ function looksLikeConfiguredAndroidClientId(value: unknown, settings: any) {
 function signUser(user: any, settings?: any) {
   const timeout = Math.max(15, Number(settings?.sessionTimeoutMinutes || 43200));
   return jwt.sign({ userId: user._id.toString(), mobile: user.mobile, email: user.email }, JWT_SECRET, { expiresIn: `${timeout}m` });
+}
+
+async function getGoogleCerts() {
+  if (googleCertCache.expiresAt > Date.now() && Object.keys(googleCertCache.certs).length > 0) {
+    return googleCertCache.certs;
+  }
+
+  const response = await fetch("https://www.googleapis.com/oauth2/v1/certs");
+  const certs = (await response.json().catch(() => null)) as Record<string, string> | null;
+  if (!response.ok || !certs) {
+    throw new Error("Unable to fetch Google public keys.");
+  }
+
+  const cacheControl = response.headers.get("cache-control") || "";
+  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
+  const maxAgeSeconds = maxAgeMatch ? Number(maxAgeMatch[1]) : 3600;
+  googleCertCache.certs = certs;
+  googleCertCache.expiresAt = Date.now() + Math.max(300, maxAgeSeconds - 60) * 1000;
+  return certs;
+}
+
+async function verifyGoogleCredential(credential: string, allowedClientIds: string[]) {
+  const decoded = jwt.decode(credential, { complete: true });
+  const kid = typeof decoded === "object" && decoded?.header ? String(decoded.header.kid || "") : "";
+  if (!kid) throw new Error("Google token is missing a key id.");
+
+  const certs = await getGoogleCerts();
+  const cert = certs[kid];
+  if (!cert) throw new Error("Google token key is not recognized.");
+
+  return jwt.verify(credential, cert, {
+    algorithms: ["RS256"],
+    audience: allowedClientIds,
+    issuer: ["accounts.google.com", "https://accounts.google.com"],
+  }) as jwt.JwtPayload;
 }
 
 async function markLogin(user: any) {
@@ -223,9 +259,16 @@ router.post("/google", async (req, res) => {
       res.status(400).json({ error: "missing_credential", message: "Google credential is required." });
       return;
     }
-    const googleResponse = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
-    const googleUser: any = await googleResponse.json().catch(() => null);
-    if (!googleResponse.ok || !allowedClientIds.includes(String(googleUser?.aud || "")) || !googleUser?.email) {
+    let googleUser: jwt.JwtPayload;
+    try {
+      googleUser = await verifyGoogleCredential(credential, allowedClientIds);
+    } catch (error) {
+      req.log.warn({ error }, "Google token verification failed");
+      res.status(401).json({ error: "invalid_google_token", message: "Google verification failed. Check the configured OAuth client IDs." });
+      return;
+    }
+
+    if (!googleUser?.email) {
       res.status(401).json({ error: "invalid_google_token", message: "Google verification failed." });
       return;
     }
