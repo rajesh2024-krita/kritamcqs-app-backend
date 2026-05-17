@@ -5,6 +5,9 @@ export interface IAuthSettings extends Document {
   emailPasswordEnabled: boolean;
   googleEnabled: boolean;
   googleClientId?: string;
+  googleAndroidClientId?: string;
+  googleAndroidPackageName?: string;
+  googleAndroidSha1?: string;
   googleClientSecret?: string;
   googleRedirectUrls: string[];
   googleCallbackUrl?: string;
@@ -25,6 +28,9 @@ const AuthSettingsSchema = new Schema<IAuthSettings>(
     emailPasswordEnabled: { type: Boolean, default: true },
     googleEnabled: { type: Boolean, default: false },
     googleClientId: { type: String, default: "" },
+    googleAndroidClientId: { type: String, default: "" },
+    googleAndroidPackageName: { type: String, default: "com.kritamcqs.androidapp" },
+    googleAndroidSha1: { type: String, default: "CE:34:23:0A:77:79:E5:01:09:10:2C:3C:A9:9C:B3:BF:7B:FD:AF:C4" },
     googleClientSecret: { type: String, default: "" },
     googleRedirectUrls: { type: [String], default: [] },
     googleCallbackUrl: { type: String, default: "" },

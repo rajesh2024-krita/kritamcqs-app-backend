@@ -57,6 +57,17 @@ async function getAuthSettings() {
   return AuthSettings.findOneAndUpdate({ key: "default" }, { $setOnInsert: { key: "default" } }, { upsert: true, new: true });
 }
 
+function getGoogleClientIds(settings: any) {
+  return [
+    settings?.googleClientId,
+    settings?.googleAndroidClientId,
+    process.env["GOOGLE_WEB_CLIENT_ID"],
+    process.env["GOOGLE_ANDROID_CLIENT_ID"],
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+}
+
 function signUser(user: any, settings?: any) {
   const timeout = Math.max(15, Number(settings?.sessionTimeoutMinutes || 43200));
   return jwt.sign({ userId: user._id.toString(), mobile: user.mobile, email: user.email }, JWT_SECRET, { expiresIn: `${timeout}m` });
@@ -93,10 +104,13 @@ function normalizeResetToken(input: unknown) {
 
 router.get("/settings", async (_req, res) => {
   const settings = await getAuthSettings();
+  const googleClientIds = getGoogleClientIds(settings);
   res.json({
     emailPasswordEnabled: settings.emailPasswordEnabled,
-    googleEnabled: settings.googleEnabled && Boolean(settings.googleClientId),
-    googleClientId: settings.googleEnabled ? settings.googleClientId : "",
+    googleEnabled: settings.googleEnabled && googleClientIds.length > 0,
+    googleClientId: settings.googleEnabled ? settings.googleClientId || process.env["GOOGLE_WEB_CLIENT_ID"] || "" : "",
+    googleAndroidClientId: settings.googleEnabled ? settings.googleAndroidClientId || process.env["GOOGLE_ANDROID_CLIENT_ID"] || "" : "",
+    googleAndroidPackageName: settings.googleAndroidPackageName || "com.kritamcqs.androidapp",
     profileMobileRequired: Boolean(settings.profileMobileRequired),
   });
 });
@@ -183,7 +197,8 @@ router.post("/login", async (req, res) => {
 router.post("/google", async (req, res) => {
   try {
     const settings = await getAuthSettings();
-    if (!settings.googleEnabled || !settings.googleClientId) {
+    const allowedClientIds = getGoogleClientIds(settings);
+    if (!settings.googleEnabled || allowedClientIds.length === 0) {
       res.status(403).json({ error: "google_disabled", message: "Google login is currently disabled." });
       return;
     }
@@ -194,7 +209,7 @@ router.post("/google", async (req, res) => {
     }
     const googleResponse = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
     const googleUser: any = await googleResponse.json().catch(() => null);
-    if (!googleResponse.ok || googleUser?.aud !== settings.googleClientId || !googleUser?.email) {
+    if (!googleResponse.ok || !allowedClientIds.includes(String(googleUser?.aud || "")) || !googleUser?.email) {
       res.status(401).json({ error: "invalid_google_token", message: "Google verification failed." });
       return;
     }
