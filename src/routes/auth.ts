@@ -68,6 +68,19 @@ function getGoogleClientIds(settings: any) {
     .filter(Boolean);
 }
 
+function looksLikeConfiguredAndroidClientId(value: unknown, settings: any) {
+  const clientId = String(value || "").trim();
+  const packageName = String(settings?.googleAndroidPackageName || "com.kritamcqs.androidapp").trim();
+  return Boolean(
+    clientId &&
+      packageName &&
+      clientId === String(settings?.googleClientId || "").trim() &&
+      !String(settings?.googleAndroidClientId || "").trim() &&
+      !String(process.env["GOOGLE_WEB_CLIENT_ID"] || "").trim() &&
+      String(process.env["GOOGLE_ANDROID_CLIENT_ID"] || "").trim() === clientId
+  );
+}
+
 function signUser(user: any, settings?: any) {
   const timeout = Math.max(15, Number(settings?.sessionTimeoutMinutes || 43200));
   return jwt.sign({ userId: user._id.toString(), mobile: user.mobile, email: user.email }, JWT_SECRET, { expiresIn: `${timeout}m` });
@@ -105,11 +118,14 @@ function normalizeResetToken(input: unknown) {
 router.get("/settings", async (_req, res) => {
   const settings = await getAuthSettings();
   const googleClientIds = getGoogleClientIds(settings);
+  const configuredGoogleClientId = String(settings.googleClientId || process.env["GOOGLE_WEB_CLIENT_ID"] || "").trim();
+  const androidClientId = String(settings.googleAndroidClientId || process.env["GOOGLE_ANDROID_CLIENT_ID"] || "").trim();
+  const googleClientIdIsAndroidOnly = looksLikeConfiguredAndroidClientId(configuredGoogleClientId, settings);
   res.json({
     emailPasswordEnabled: settings.emailPasswordEnabled,
     googleEnabled: settings.googleEnabled && googleClientIds.length > 0,
-    googleClientId: settings.googleEnabled ? settings.googleClientId || process.env["GOOGLE_WEB_CLIENT_ID"] || "" : "",
-    googleAndroidClientId: settings.googleEnabled ? settings.googleAndroidClientId || process.env["GOOGLE_ANDROID_CLIENT_ID"] || "" : "",
+    googleClientId: settings.googleEnabled && !googleClientIdIsAndroidOnly ? configuredGoogleClientId : "",
+    googleAndroidClientId: settings.googleEnabled ? androidClientId || (googleClientIdIsAndroidOnly ? configuredGoogleClientId : "") : "",
     googleAndroidPackageName: settings.googleAndroidPackageName || "com.kritamcqs.androidapp",
     profileMobileRequired: Boolean(settings.profileMobileRequired),
   });
