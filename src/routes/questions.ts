@@ -40,6 +40,7 @@ function buildPaperModeMatch(mode?: string, exactMode?: string) {
 router.get("/", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   const { subjectId, chapterId, difficulty, limit, mode, exam, questionType, subject, isNumerical, hasDiagram, exactMode } =
     req.query as Record<string, string>;
+  const examType = String(req.query["examType"] ?? req.query["exam_type"] ?? "").trim();
   const filter: Record<string, unknown> = {};
   const aggregateClauses: Record<string, unknown>[] = [];
   const normalizedSubject = normalizeQuestionSubject(subject);
@@ -59,6 +60,8 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
   if (difficultyFilter) aggregateClauses.push(difficultyFilter);
   const modeMatch = buildPaperModeMatch(mode, exactMode);
   if (modeMatch) aggregateClauses.push(modeMatch);
+  const examTypeMatch = buildPaperModeMatch(examType, exactMode);
+  if (examTypeMatch) aggregateClauses.push(examTypeMatch);
   if (exam) aggregateClauses.push({ exam });
   if (questionType) aggregateClauses.push({ questionType });
   if (normalizedSubject) {
@@ -69,7 +72,24 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
           : normalizedSubject,
     });
   }
-  if (req.query["year"]) aggregateClauses.push({ year: Number(req.query["year"]) });
+  if (req.query["year"]) {
+    const requestedYear = Number(req.query["year"]);
+    const yearDocs = Number.isFinite(requestedYear)
+      ? await Year.find({
+          $or: [
+            { value: requestedYear },
+            { name: String(requestedYear) },
+            { label: String(requestedYear) },
+          ],
+        }).select("_id")
+      : [];
+    const yearIds = yearDocs.map((item) => String(item._id));
+    aggregateClauses.push(
+      yearIds.length > 0
+        ? { $or: [{ year: requestedYear }, { yearId: { $in: yearIds } }] }
+        : { year: requestedYear },
+    );
+  }
   if (req.query["yearId"]) aggregateClauses.push({ yearId: String(req.query["yearId"]) });
   if (req.query["questionTypeId"]) aggregateClauses.push({ questionTypeId: String(req.query["questionTypeId"]) });
   if (isNumerical !== undefined) aggregateClauses.push({ isNumerical: isNumerical === "true" });
@@ -112,7 +132,8 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
         ...normalized,
         subjectName: normalized.subject ?? subjectDoc?.name,
         chapterName: chapterDoc?.name,
-        yearLabel: yearDoc?.label ?? (normalized.year ? String(normalized.year) : undefined),
+        year: normalized.year ?? (yearDoc as any)?.value ?? ((yearDoc as any)?.name ? Number((yearDoc as any).name) : undefined),
+        yearLabel: (yearDoc as any)?.label ?? (yearDoc as any)?.name ?? (normalized.year ? String(normalized.year) : undefined),
         modeLabel: modeDoc?.label ?? normalized.examMode,
         examTypeLabel: getExamTypeLabel(normalized.exam, normalized.examMode),
       };
@@ -160,6 +181,13 @@ async function parseQuestionPayload(body: Record<string, any>) {
     difficulty: body.difficulty,
     difficultyId: body.difficultyId,
   });
+  const yearDoc = body.yearId && !body.year
+    ? await Year.findById(String(body.yearId)).catch(() => null)
+    : null;
+  const rawYearValue = body.year
+    ? body.year
+    : (yearDoc as any)?.value ?? (yearDoc as any)?.name;
+  const yearValue = rawYearValue !== undefined && rawYearValue !== null ? Number(rawYearValue) : undefined;
 
   if (examMode && normalizedSubject && !isValidExamSubjectCombination(examMode, normalizedSubject)) {
     throw new Error(`Invalid subject "${normalizedSubject}" for exam mode "${examMode}"`);
@@ -192,7 +220,7 @@ async function parseQuestionPayload(body: Record<string, any>) {
     numericAnswer: body.numericAnswer ? String(body.numericAnswer) : undefined,
     correctOptions: Array.isArray(body.correctOptions) ? body.correctOptions.map(String) : [],
     passage: body.passage ? String(body.passage) : undefined,
-    year: body.year ? Number(body.year) : undefined,
+    year: Number.isFinite(yearValue) ? yearValue : undefined,
     batch: body.batch ? String(body.batch) : undefined,
     batchLabel: body.batchLabel ? String(body.batchLabel) : undefined,
     batchYear: body.batchYear ? String(body.batchYear) : undefined,

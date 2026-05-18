@@ -11,6 +11,7 @@ import {
   QuestionAttempt,
   SessionAttempt,
   User,
+  Year,
 } from "@api/db";
 import { z } from "zod";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
@@ -312,8 +313,19 @@ router.get("/daily-test", requireAuth, requireOnboardingComplete, async (req: Au
     }
   }
 
+  const yearIds = [...new Set(questions.map((question: any) => String(question.yearId ?? "")).filter(Boolean))];
+  const years = yearIds.length > 0 ? await Year.find({ _id: { $in: yearIds } }) : [];
+  const yearMap = new Map(years.map((year) => [year.id, year]));
   const normalized = shuffleQuestionOptionsForDelivery(
-    questions.map((question: any) => normalizeQuestionDocument(question)),
+    questions.map((question: any) => {
+      const normalizedQuestion = normalizeQuestionDocument(question);
+      const year = normalizedQuestion.yearId ? yearMap.get(String(normalizedQuestion.yearId)) : undefined;
+      return {
+        ...normalizedQuestion,
+        year: normalizedQuestion.year ?? (year as any)?.value ?? ((year as any)?.name ? Number((year as any).name) : undefined),
+        yearLabel: (year as any)?.label ?? (year as any)?.name ?? (normalizedQuestion.year ? String(normalizedQuestion.year) : undefined),
+      };
+    }),
   );
   const difficultyMix = buildDifficultyMix(normalized);
 

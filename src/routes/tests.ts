@@ -8,6 +8,7 @@ import {
   QuestionAttempt,
   SessionAttempt,
   Subject,
+  Year,
   mongoose,
 } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
@@ -466,8 +467,19 @@ router.post("/generate", requireAuth, requireOnboardingComplete, async (req: Aut
       title,
     });
 
+    const yearIds = [...new Set(selectedQuestions.map((question: any) => String(question.yearId ?? "")).filter(Boolean))];
+    const years = yearIds.length > 0 ? await Year.find({ _id: { $in: yearIds } }) : [];
+    const yearMap = new Map(years.map((year) => [year.id, year]));
     const questionsJson = shuffleQuestionOptionsForDelivery(
-      selectedQuestions.map((question: any) => normalizeQuestionDocument(question)),
+      selectedQuestions.map((question: any) => {
+        const normalized = normalizeQuestionDocument(question);
+        const yearDoc = normalized.yearId ? yearMap.get(String(normalized.yearId)) : undefined;
+        return {
+          ...normalized,
+          year: normalized.year ?? (yearDoc as any)?.value ?? ((yearDoc as any)?.name ? Number((yearDoc as any).name) : undefined),
+          yearLabel: (yearDoc as any)?.label ?? (yearDoc as any)?.name ?? (normalized.year ? String(normalized.year) : undefined),
+        };
+      }),
     );
     res.json({
       id: session.id,

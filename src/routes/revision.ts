@@ -13,6 +13,7 @@ import {
   SessionAttempt,
   Subject,
   Topic,
+  Year,
 } from "@api/db";
 import { z } from "zod";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
@@ -56,17 +57,21 @@ async function getRevisionConfig() {
 }
 
 async function normalizeQuestionWithNames(question: any) {
-  const [subject, chapter, topic] = await Promise.all([
+  const [subject, chapter, topic, year] = await Promise.all([
     question.subjectId ? Subject.findById(question.subjectId) : Promise.resolve(null),
     question.chapterId ? Chapter.findById(question.chapterId) : Promise.resolve(null),
     question.topicId ? Topic.findById(question.topicId) : Promise.resolve(null),
+    question.yearId ? Year.findById(question.yearId) : Promise.resolve(null),
   ]);
+  const normalized = normalizeQuestionDocument(question);
 
   return {
-    ...normalizeQuestionDocument(question),
+    ...normalized,
     subjectName: subject?.name ?? "Unknown",
     chapterName: chapter?.name ?? "Unknown",
     topicName: topic?.name ?? "General",
+    year: normalized.year ?? (year as any)?.value ?? ((year as any)?.name ? Number((year as any).name) : undefined),
+    yearLabel: (year as any)?.label ?? (year as any)?.name ?? (normalized.year ? String(normalized.year) : undefined),
   };
 }
 
@@ -511,20 +516,24 @@ router.get("/mistakes", requireAuth, requireOnboardingComplete, async (req: Auth
 
       if (subjectId && String(question.subjectId) !== String(subjectId)) return null;
 
-      const [subject, chapter, topic, latestAttempt] = await Promise.all([
+      const [subject, chapter, topic, year, latestAttempt] = await Promise.all([
         Subject.findById(question.subjectId),
         Chapter.findById(question.chapterId),
         question.topicId ? Topic.findById(question.topicId) : Promise.resolve(null),
+        question.yearId ? Year.findById(question.yearId) : Promise.resolve(null),
         QuestionAttempt.findOne({ userId, questionId: String(question._id) }).sort({ createdAt: -1 }),
       ]);
+      const normalizedQuestion = normalizeQuestionDocument(question);
 
       return {
         id: mistake._id.toString(),
         question: {
-          ...normalizeQuestionDocument(question),
+          ...normalizedQuestion,
           subjectName: subject?.name ?? "Unknown",
           chapterName: chapter?.name ?? "Unknown",
           topicName: topic?.name ?? "General",
+          year: normalizedQuestion.year ?? (year as any)?.value ?? ((year as any)?.name ? Number((year as any).name) : undefined),
+          yearLabel: (year as any)?.label ?? (year as any)?.name ?? (normalizedQuestion.year ? String(normalizedQuestion.year) : undefined),
         },
         status: mistake.status,
         attempts: mistake.attempts,

@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { Chapter, MockTest, Question, Subject, mongoose } from "@api/db";
+import { Chapter, MockTest, Question, Subject, Year, mongoose } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
 import { createLearningSession } from "../lib/learning";
@@ -266,9 +266,11 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
     const sessionSubjectIds = [...new Set(sessionQuestions.map((question: any) => toIdString(question?.subjectId)).filter(Boolean))];
     const sessionChapterIds = [...new Set(sessionQuestions.map((question: any) => toIdString(question?.chapterId)).filter(Boolean))];
     const sessionTopicIds = [...new Set(sessionQuestions.map((question: any) => toIdString(question?.topicId)).filter(Boolean))];
-    const [sessionSubjects, sessionChapters] = await Promise.all([
+    const sessionYearIds = [...new Set(sessionQuestions.map((question: any) => toIdString(question?.yearId)).filter(Boolean))];
+    const [sessionSubjects, sessionChapters, sessionYears] = await Promise.all([
       sessionSubjectIds.length ? Subject.find({ _id: { $in: sessionSubjectIds } }).select("_id name") : [],
       sessionChapterIds.length ? Chapter.find({ _id: { $in: sessionChapterIds } }).select("_id name") : [],
+      sessionYearIds.length ? Year.find({ _id: { $in: sessionYearIds } }) : [],
     ]);
     let topicNameMap = new Map<string, string>();
     if (sessionTopicIds.length) {
@@ -294,6 +296,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
     }
     const subjectNameMap = new Map(sessionSubjects.map((item: any) => [toIdString(item?._id), String(item?.name || "").trim()]));
     const chapterNameMap = new Map(sessionChapters.map((item: any) => [toIdString(item?._id), String(item?.name || "").trim()]));
+    const yearMap = new Map(sessionYears.map((item: any) => [toIdString(item?._id), item]));
 
     const session = await createLearningSession({
       userId: req.userId!,
@@ -334,6 +337,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
           const subjectName = subjectNameMap.get(toIdString(question?.subjectId)) || String(normalized?.subject || "").trim();
           const chapterName = chapterNameMap.get(toIdString(question?.chapterId)) || String(normalized?.chapterName || "").trim();
           const topicName = topicNameMap.get(toIdString(question?.topicId)) || String(normalized?.topicName || normalized?.topicLabel || normalized?.topic || "").trim();
+          const year = yearMap.get(toIdString(question?.yearId));
           return {
             ...normalized,
             subject: subjectName || normalized.subject,
@@ -341,6 +345,8 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
             chapterName: chapterName || normalized.chapterName,
             topicName: topicName || normalized.topicName,
             topicLabel: topicName || normalized.topicLabel,
+            year: normalized.year ?? (year as any)?.value ?? ((year as any)?.name ? Number((year as any).name) : undefined),
+            yearLabel: (year as any)?.label ?? (year as any)?.name ?? (normalized.year ? String(normalized.year) : undefined),
           };
         }),
       ),

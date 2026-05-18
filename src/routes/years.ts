@@ -15,16 +15,22 @@ function buildPaperModeFilter(mode: string) {
 router.get("/", requireAuth, async (req, res) => {
   const mode = String(req.query["mode"] || "");
   const questionFilter = buildPaperModeFilter(mode);
-  const [items, yearValues] = await Promise.all([
+  const [items, yearValues, yearIds] = await Promise.all([
     Year.find({}).sort({ value: -1 }),
     Question.distinct("year", { ...questionFilter, year: { $ne: null } }),
+    Question.distinct("yearId", { ...questionFilter, yearId: { $nin: [null, ""] } }),
   ]);
   if (!mode) {
     res.json(items);
     return;
   }
   const available = new Set(yearValues.map((value) => String(value)));
-  const filtered = items.filter((item: any) => available.has(String(item.value ?? item.name ?? item.label)));
+  const availableYearIds = new Set(yearIds.map((value) => String(value)));
+  const filtered = items.filter(
+    (item: any) =>
+      available.has(String(item.value ?? item.name ?? item.label)) ||
+      availableYearIds.has(String(item.id ?? item._id)),
+  );
   if (filtered.length) {
     res.json(filtered);
     return;
