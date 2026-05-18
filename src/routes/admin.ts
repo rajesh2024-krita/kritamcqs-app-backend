@@ -266,9 +266,13 @@ function serializeSubject(subject: any) {
 
 function serializeYear(year: any) {
   const raw = typeof year?.toJSON === "function" ? year.toJSON() : year;
+  const rawValue = raw.value ?? Number(raw.name ?? raw.label);
+  const value = Number.isFinite(rawValue) ? Number(rawValue) : undefined;
   return {
     id: String(raw.id ?? raw._id),
     name: raw.name,
+    label: raw.label ?? raw.name,
+    value,
     examType: raw.examType,
     createdAt: raw.createdAt,
     updatedAt: raw.updatedAt,
@@ -304,8 +308,13 @@ function hashPassword(password: string) {
 
 function normalizeYearPayload(body: Record<string, unknown>) {
   const name = String(body.name ?? "").trim();
+  const label = String(body.label ?? name).trim();
+  const rawValue = body.value ?? name;
+  const value = Number(rawValue);
   return {
     name,
+    label,
+    value: Number.isFinite(value) ? value : undefined,
     examType: body.examType ? String(body.examType) : body.examCategory ? String(body.examCategory) : undefined,
   };
 }
@@ -1134,7 +1143,7 @@ function findYear(years: any[], rawValue: unknown, overrideId?: string) {
   const value = normalizeValue(rawValue);
   return (
     years.find((item) =>
-      [serializeYear(item).name, item.id].some((entry) => normalizeValue(entry) === value),
+      [serializeYear(item).name, serializeYear(item).label, serializeYear(item).value, item.id].some((entry) => normalizeValue(entry) === value),
     ) || null
   );
 }

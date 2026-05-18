@@ -7,6 +7,8 @@
     "dev": "node ./build.mjs && node --enable-source-maps ./dist/index.mjs",
     "build": "node ./build.mjs",
     "start": "node --enable-source-maps ./dist/index.mjs",
+    "db:diagnose-pyq": "node ./scripts/diagnose-pyq-data.mjs",
+    "db:normalize-pyq": "node ./scripts/normalize-pyq-data.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

@@ -27,6 +27,33 @@ function buildFlexibleIdMatch(field: "chapterId" | "subjectId", ids?: Array<stri
   return { $expr: { $in: [{ $toString: `$${field}` }, normalizedIds] } };
 }
 
+function buildFlexibleSingleIdMatch(field: "yearId" | "questionTypeId", id?: string) {
+  const normalizedId = String(id ?? "").trim();
+  if (!normalizedId) return undefined;
+  return { $expr: { $eq: [{ $toString: `$${field}` }, normalizedId] } };
+}
+
+function buildYearMatch(year: unknown, yearIds: string[]) {
+  const rawYear = String(year ?? "").trim();
+  const numericYear = Number(rawYear);
+  const yearClauses: Record<string, unknown>[] = [];
+
+  if (Number.isFinite(numericYear)) {
+    yearClauses.push({ year: numericYear });
+  }
+
+  if (rawYear) {
+    yearClauses.push({ year: rawYear });
+    yearClauses.push({ $expr: { $eq: [{ $toString: "$year" }, rawYear] } });
+  }
+
+  if (yearIds.length > 0) {
+    yearClauses.push({ $expr: { $in: [{ $toString: "$yearId" }, yearIds] } });
+  }
+
+  return yearClauses.length === 1 ? yearClauses[0] : { $or: yearClauses };
+}
+
 function buildPaperModeMatch(mode?: string, exactMode?: string) {
   if (!mode) return undefined;
   if (mode === "NEET") return { $or: [{ examMode: "NEET" }, { exam: "NEET" }] };
@@ -74,24 +101,21 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
   }
   if (req.query["year"]) {
     const requestedYear = Number(req.query["year"]);
+    const yearText = String(req.query["year"]).trim();
     const yearDocs = Number.isFinite(requestedYear)
       ? await Year.find({
           $or: [
             { value: requestedYear },
-            { name: String(requestedYear) },
-            { label: String(requestedYear) },
+            { name: yearText },
+            { label: yearText },
           ],
         }).select("_id")
       : [];
     const yearIds = yearDocs.map((item) => String(item._id));
-    aggregateClauses.push(
-      yearIds.length > 0
-        ? { $or: [{ year: requestedYear }, { yearId: { $in: yearIds } }] }
-        : { year: requestedYear },
-    );
+    aggregateClauses.push(buildYearMatch(req.query["year"], yearIds));
   }
-  if (req.query["yearId"]) aggregateClauses.push({ yearId: String(req.query["yearId"]) });
-  if (req.query["questionTypeId"]) aggregateClauses.push({ questionTypeId: String(req.query["questionTypeId"]) });
+  if (req.query["yearId"]) aggregateClauses.push(buildFlexibleSingleIdMatch("yearId", String(req.query["yearId"]))!);
+  if (req.query["questionTypeId"]) aggregateClauses.push(buildFlexibleSingleIdMatch("questionTypeId", String(req.query["questionTypeId"]))!);
   if (isNumerical !== undefined) aggregateClauses.push({ isNumerical: isNumerical === "true" });
   if (hasDiagram !== undefined) aggregateClauses.push({ hasDiagram: hasDiagram === "true" });
 

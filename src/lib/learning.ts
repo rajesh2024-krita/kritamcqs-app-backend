@@ -45,9 +45,10 @@ export async function getModeRecord(modeKey: ModeKey) {
 }
 
 export async function ensureYearRecord(yearValue: number) {
+  const yearName = String(yearValue);
   return Year.findOneAndUpdate(
-    { value: yearValue },
-    { value: yearValue, label: String(yearValue) },
+    { $or: [{ value: yearValue }, { name: yearName }, { label: yearName }] },
+    { name: yearName, value: yearValue, label: yearName },
     { upsert: true, new: true },
   );
 }
