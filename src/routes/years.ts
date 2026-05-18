@@ -5,11 +5,24 @@ import { requireAuth } from "../middlewares/auth";
 const router: IRouter = Router();
 
 function buildPaperModeFilter(mode: string) {
-  if (!mode) return {};
-  if (mode === "NEET") return { $or: [{ examMode: "NEET" }, { exam: "NEET" }] };
-  if (mode === "JEE") return { $or: [{ examMode: "JEE" }, { exam: { $in: ["JEE", "JEE_MAIN", "JEE_ADVANCED"] } }] };
-  if (mode === "BOTH") return { examMode: "BOTH" };
-  return { examMode: mode };
+  const normalizedMode = String(mode || "").trim().toUpperCase();
+  if (!normalizedMode) return {};
+  if (normalizedMode === "BOTH") return {};
+
+  const modeValues = normalizedMode.startsWith("JEE")
+    ? ["JEE", "Jee", "jee", "JEE_MAIN", "JEE_ADVANCED"]
+    : normalizedMode.startsWith("NEET")
+      ? ["NEET", "Neet", "neet", "NEET_UG"]
+      : [normalizedMode, mode];
+  const bothValues = ["BOTH", "Both", "both", "MIXED", "ALL"];
+
+  return {
+    $or: [
+      { examMode: { $in: [...modeValues, ...bothValues] } },
+      { examType: { $in: [...modeValues, ...bothValues] } },
+      { exam: { $in: modeValues } },
+    ],
+  };
 }
 
 function readYearValue(item: any) {

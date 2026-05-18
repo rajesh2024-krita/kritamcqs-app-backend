@@ -55,13 +55,43 @@ function buildYearMatch(year: unknown, yearIds: string[]) {
 }
 
 function buildPaperModeMatch(mode?: string, exactMode?: string) {
-  if (!mode) return undefined;
-  if (mode === "NEET") return { $or: [{ examMode: "NEET" }, { exam: "NEET" }] };
-  if (mode === "JEE") return { $or: [{ examMode: "JEE" }, { exam: { $in: ["JEE", "JEE_MAIN", "JEE_ADVANCED"] } }] };
-  if (exactMode === "true") return { examMode: mode };
-  const examModes = getQuestionExamModes(mode);
-  if (examModes.length === 0) return undefined;
-  return { examMode: examModes.length === 1 ? examModes[0] : { $in: examModes } };
+  const normalizedMode = String(mode ?? "").trim().toUpperCase();
+  if (!normalizedMode) return undefined;
+
+  const valuesForMode = (value: string) => {
+    if (value === "JEE") return ["JEE", "Jee", "jee", "JEE_MAIN", "JEE_ADVANCED"];
+    if (value === "NEET") return ["NEET", "Neet", "neet", "NEET_UG"];
+    if (value === "BOTH") return ["BOTH", "Both", "both", "MIXED", "ALL"];
+    return [value, String(mode)];
+  };
+  const modeKey = normalizedMode.startsWith("JEE")
+    ? "JEE"
+    : normalizedMode.startsWith("NEET")
+      ? "NEET"
+      : normalizedMode;
+  const requestedModeValues = valuesForMode(modeKey);
+  const bothModeValues = valuesForMode("BOTH");
+
+  if (exactMode === "true") {
+    return {
+      $or: [
+        { examMode: { $in: requestedModeValues } },
+        { examType: { $in: requestedModeValues } },
+        { exam: { $in: requestedModeValues } },
+      ],
+    };
+  }
+
+  const examModes = getQuestionExamModes(modeKey);
+  const examModeValues = [...new Set([...examModes.flatMap(valuesForMode), ...bothModeValues])];
+
+  return {
+    $or: [
+      { examMode: { $in: examModeValues } },
+      { examType: { $in: examModeValues } },
+      { exam: { $in: requestedModeValues } },
+    ],
+  };
 }
 
 router.get("/", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {

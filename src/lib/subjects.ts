@@ -16,7 +16,12 @@ export type SubjectSummary = {
 };
 
 function normalizeMode(mode?: string | null): ManagedMode {
-  return String(mode || "").trim() || "BOTH";
+  const normalized = String(mode || "").trim().toUpperCase();
+  if (!normalized) return "BOTH";
+  if (normalized === "JEE_MAIN" || normalized === "JEE_ADVANCED" || normalized.startsWith("JEE")) return "JEE";
+  if (normalized === "NEET_UG" || normalized.startsWith("NEET")) return "NEET";
+  if (normalized === "MIXED" || normalized === "ALL") return "BOTH";
+  return normalized;
 }
 
 function normalizeName(name?: string) {
@@ -33,17 +38,39 @@ function getSubjectNameKey(subject: Pick<ISubject, "name"> | Record<string, any>
 }
 
 function getSubjectMode(subject: Pick<ISubject, "examMode" | "examType"> | Record<string, any>): ManagedMode | undefined {
-  const mode = subject.examType ?? subject.examMode;
-  if (mode) return String(mode);
-  if (mode === "JEE_MAIN" || mode === "JEE_ADVANCED") return "JEE";
+  const mode = subject.examType ?? subject.examMode ?? subject.mode ?? subject.exam;
+  if (mode) return normalizeMode(String(mode));
   return undefined;
 }
 
 function getRequestedMode(filter: Record<string, unknown>): ManagedMode | undefined {
   const rawMode = typeof filter.examMode === "string" ? filter.examMode : typeof filter.examType === "string" ? filter.examType : undefined;
-  if (rawMode) return rawMode;
-  if (rawMode === "JEE_MAIN" || rawMode === "JEE_ADVANCED") return "JEE";
+  if (rawMode) return normalizeMode(rawMode);
   return undefined;
+}
+
+function getModeQueryValues(mode: string) {
+  const normalized = normalizeMode(mode);
+  if (normalized === "NEET") return ["NEET", "Neet", "neet", "NEET_UG"];
+  if (normalized === "JEE") return ["JEE", "Jee", "jee", "JEE_MAIN", "JEE_ADVANCED"];
+  if (normalized === "BOTH") return ["BOTH", "Both", "both", "MIXED", "ALL"];
+  return [normalized, mode];
+}
+
+export function buildManagedModeQuery(mode?: string | null) {
+  if (!mode || normalizeMode(mode) === "BOTH") return {};
+  const requestedValues = getModeQueryValues(mode);
+  const bothValues = getModeQueryValues("BOTH");
+  const modeValues = [...new Set([...requestedValues, ...bothValues])];
+
+  return {
+    $or: [
+      { examMode: { $in: modeValues } },
+      { examType: { $in: modeValues } },
+      { mode: { $in: modeValues } },
+      { exam: { $in: requestedValues } },
+    ],
+  };
 }
 
 function getSubjectIdentityKey(subject: Pick<ISubject, "name" | "examMode" | "examType"> | Record<string, any>) {
@@ -95,9 +122,16 @@ async function getQuestionCountMapByModes(examModes?: string[]) {
   const pipeline: Record<string, unknown>[] = [];
 
   if (examModes && examModes.length > 0) {
+    const normalizedModes = [...new Set(examModes.map(normalizeMode))];
+    const modeValues = normalizedModes.flatMap(getModeQueryValues);
+    const examValues = normalizedModes.filter((mode) => mode !== "BOTH").flatMap(getModeQueryValues);
     pipeline.push({
       $match: {
-        examMode: { $in: examModes },
+        $or: [
+          { examMode: { $in: modeValues } },
+          { examType: { $in: modeValues } },
+          { exam: { $in: examValues } },
+        ],
       },
     });
   }
@@ -166,7 +200,7 @@ export async function resolveSubjectIds(subjectId?: string, examType?: ManagedEx
   }
 
   const requestedSlug = normalizeName(normalizedSubjectId);
-  const subjects = await Subject.find(examType ? { $or: [{ examMode: examType }, { examMode: "BOTH" }, { examType }] } : {});
+  const subjects = await Subject.find(examType ? buildManagedModeQuery(examType) : {});
   const matched = subjects.filter((subject) => {
     const subjectName = normalizeName(subject.name);
     const slug = toSubjectSlug(subject.name);
@@ -178,7 +212,7 @@ export async function resolveSubjectIds(subjectId?: string, examType?: ManagedEx
   if (matchedIds.length === 0) return [];
 
   const matchedNames = new Set(matched.map((subject) => getSubjectIdentityKey(subject)));
-  const grouped = await Subject.find(examType ? { $or: [{ examMode: examType }, { examMode: "BOTH" }, { examType }] } : {}).sort({ createdAt: 1, _id: 1 });
+  const grouped = await Subject.find(examType ? buildManagedModeQuery(examType) : {}).sort({ createdAt: 1, _id: 1 });
   const relatedIds = grouped
     .filter((subject) => matchedNames.has(getSubjectIdentityKey(subject)))
     .map((subject) => String(subject._id));

@@ -40,10 +40,12 @@ export function normalizeQuestionDocument(question: IQuestion | Record<string, a
 }
 
 export function getExamTypeLabel(exam?: string, examMode?: string) {
-  if (exam === "JEE_MAIN" || exam === "JEE_ADVANCED") return "JEE";
-  if (exam === "NEET") return "NEET";
-  if (examMode === "JEE") return "JEE";
-  if (examMode === "NEET") return "NEET";
+  const normalizedExam = String(exam ?? "").trim().toUpperCase();
+  const normalizedExamMode = String(examMode ?? "").trim().toUpperCase();
+  if (normalizedExam === "JEE_MAIN" || normalizedExam === "JEE_ADVANCED" || normalizedExam === "JEE") return "JEE";
+  if (normalizedExam === "NEET" || normalizedExam === "NEET_UG") return "NEET";
+  if (normalizedExamMode === "JEE_MAIN" || normalizedExamMode === "JEE_ADVANCED" || normalizedExamMode === "JEE") return "JEE";
+  if (normalizedExamMode === "NEET" || normalizedExamMode === "NEET_UG") return "NEET";
   return exam ?? examMode;
 }
 

@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { Chapter, Question, ChapterPerformance, mongoose } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
-import { getAllSubjectSummaries, resolveSubjectIds } from "../lib/subjects";
+import { buildManagedModeQuery, getAllSubjectSummaries, resolveSubjectIds } from "../lib/subjects";
 
 const router: IRouter = Router();
 
@@ -42,10 +42,7 @@ async function loadChaptersBySubjectIds(subjectIds: string[]) {
 router.get("/", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   const mode = req.query["mode"] as string | undefined;
 
-  const filter: Record<string, unknown> =
-    !mode || mode === "BOTH"
-      ? {}
-      : { $or: [{ examMode: mode }, { examMode: "BOTH" }, { examType: mode }] };
+  const filter: Record<string, unknown> = buildManagedModeQuery(mode);
 
   res.json(await getAllSubjectSummaries(filter));
 });
@@ -78,7 +75,7 @@ router.get("/:subjectId/chapters", requireAuth, requireOnboardingComplete, async
 
     const questionFilter: Record<string, unknown> = { chapterId: { $in: buildChapterIdVariants(chapterIds) } };
     if (examType) {
-      questionFilter.examMode = { $in: [examType, "BOTH"] };
+      Object.assign(questionFilter, buildManagedModeQuery(examType));
     }
 
     let questionCounts: Array<{ _id: unknown; count?: number }> = [];
