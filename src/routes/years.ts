@@ -26,7 +26,7 @@ function buildPaperModeFilter(mode: string) {
 }
 
 function readYearValue(item: any) {
-  const raw = item?.value ?? item?.name ?? item?.label;
+  const raw = item?.value ?? item?.name ?? item?.label ?? item?.year ?? item?.examYear ?? item?.previousYear;
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : null;
 }
@@ -49,9 +49,11 @@ router.get("/", requireAuth, async (req, res) => {
   const mode = String(req.query["mode"] || "");
   const questionFilter = buildPaperModeFilter(mode);
 
-  const [yearDocs, questionYearValues, questionYearIds] = await Promise.all([
+  const [yearDocs, questionYearValues, questionExamYearValues, questionPreviousYearValues, questionYearIds] = await Promise.all([
     Year.find({}).sort({ name: -1, value: -1 }),
     Question.distinct("year", { ...questionFilter, year: { $nin: [null, ""] } }),
+    Question.distinct("examYear", { ...questionFilter, examYear: { $nin: [null, ""] } }),
+    Question.distinct("previousYear", { ...questionFilter, previousYear: { $nin: [null, ""] } }),
     Question.distinct("yearId", { ...questionFilter, yearId: { $nin: [null, ""] } }),
   ]);
 
@@ -61,7 +63,7 @@ router.get("/", requireAuth, async (req, res) => {
   }
 
   const yearValueSet = new Set(
-    questionYearValues
+    [...questionYearValues, ...questionExamYearValues, ...questionPreviousYearValues]
       .map((value) => Number(value))
       .filter((value) => Number.isFinite(value))
       .map(String),

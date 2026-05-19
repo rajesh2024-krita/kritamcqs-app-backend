@@ -40,11 +40,17 @@ function buildYearMatch(year: unknown, yearIds: string[]) {
 
   if (Number.isFinite(numericYear)) {
     yearClauses.push({ year: numericYear });
+    yearClauses.push({ examYear: numericYear });
+    yearClauses.push({ previousYear: numericYear });
   }
 
   if (rawYear) {
     yearClauses.push({ year: rawYear });
+    yearClauses.push({ examYear: rawYear });
+    yearClauses.push({ previousYear: rawYear });
     yearClauses.push({ $expr: { $eq: [{ $toString: "$year" }, rawYear] } });
+    yearClauses.push({ $expr: { $eq: [{ $toString: "$examYear" }, rawYear] } });
+    yearClauses.push({ $expr: { $eq: [{ $toString: "$previousYear" }, rawYear] } });
   }
 
   if (yearIds.length > 0) {
@@ -52,6 +58,24 @@ function buildYearMatch(year: unknown, yearIds: string[]) {
   }
 
   return yearClauses.length === 1 ? yearClauses[0] : { $or: yearClauses };
+}
+
+function readQuestionYearValue(question: Record<string, any>, yearDoc?: Record<string, any>) {
+  const candidates = [
+    question.year,
+    question.examYear,
+    question.previousYear,
+    yearDoc?.value,
+    yearDoc?.name,
+    yearDoc?.label,
+  ];
+
+  for (const candidate of candidates) {
+    const parsed = Number(candidate);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+
+  return undefined;
 }
 
 function buildPaperModeMatch(mode?: string, exactMode?: string) {
@@ -181,13 +205,14 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
       const chapterDoc = chapterMap.get(String(normalized.chapterId));
       const yearDoc = normalized.yearId ? yearMap.get(String(normalized.yearId)) : undefined;
       const modeDoc = normalized.modeId ? modeMap.get(String(normalized.modeId)) : undefined;
+      const yearValue = readQuestionYearValue(normalized, yearDoc as any);
 
       return {
         ...normalized,
         subjectName: normalized.subject ?? subjectDoc?.name,
         chapterName: chapterDoc?.name,
-        year: normalized.year ?? (yearDoc as any)?.value ?? ((yearDoc as any)?.name ? Number((yearDoc as any).name) : undefined),
-        yearLabel: (yearDoc as any)?.label ?? (yearDoc as any)?.name ?? (normalized.year ? String(normalized.year) : undefined),
+        year: yearValue,
+        yearLabel: (yearDoc as any)?.label ?? (yearDoc as any)?.name ?? (yearValue ? String(yearValue) : undefined),
         modeLabel: modeDoc?.label ?? normalized.examMode,
         examTypeLabel: getExamTypeLabel(normalized.exam, normalized.examMode),
       };

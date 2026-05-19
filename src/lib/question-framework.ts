@@ -9,6 +9,7 @@ export function normalizeQuestionDocument(question: IQuestion | Record<string, a
   const subject = raw.subject ?? inferSubject(raw.subjectId, raw.subjectName, raw.examMode);
   const exam = raw.exam ?? inferExam(raw.examMode, subject, raw.difficulty);
   const responseType = raw.responseType ?? inferResponseType(raw);
+  const yearValue = readYearValue(raw.year, raw.examYear, raw.previousYear);
   const questionType =
     raw.questionType ??
     questionTypeDoc?.label ??
@@ -36,7 +37,16 @@ export function normalizeQuestionDocument(question: IQuestion | Record<string, a
         ? raw.difficultyId
         : raw.difficultyId?.id ?? raw.difficultyId?._id?.toString(),
     questionTypeLabel: questionTypeDoc?.label ?? questionTypeDoc?.name ?? raw.questionTypeLabel ?? questionType,
+    year: yearValue,
   };
+}
+
+function readYearValue(...values: unknown[]) {
+  for (const value of values) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
 }
 
 export function getExamTypeLabel(exam?: string, examMode?: string) {
