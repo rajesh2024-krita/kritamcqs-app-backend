@@ -55,13 +55,15 @@ export function normalizeYearDocument(year?: Record<string, any> | null) {
   const yearValue = readYearValue(raw.value, raw.name, raw.label);
   const yearLabel = String(raw.label ?? raw.name ?? yearValue ?? "").trim();
 
-  return {
+  const normalized = {
     id: String(raw.id ?? raw._id ?? "").trim(),
     name: String(raw.name ?? yearLabel).trim(),
     label: yearLabel,
     value: yearValue,
     examType: raw.examType,
   };
+  console.log("[YEAR DEBUG][backend:normalizeYearDocument]", { raw, normalized });
+  return normalized;
 }
 
 export function resolveQuestionYearFields(question: Record<string, any>, yearDoc?: Record<string, any> | null) {
@@ -72,11 +74,24 @@ export function resolveQuestionYearFields(question: Record<string, any>, yearDoc
     normalizedYear?.name ||
     (yearValue ? String(yearValue) : undefined);
 
-  return {
+  const resolved = {
     yearId: normalizedYear?.id || question.yearId,
     year: yearValue,
     yearLabel,
   };
+  console.log("[YEAR DEBUG][backend:resolveQuestionYearFields]", {
+    questionId: question.id ?? question._id,
+    incoming: {
+      yearId: question.yearId,
+      year: question.year,
+      examYear: question.examYear,
+      previousYear: question.previousYear,
+      yearLabel: question.yearLabel,
+    },
+    matchedYear: normalizedYear,
+    resolved,
+  });
+  return resolved;
 }
 
 export function getExamTypeLabel(exam?: string, examMode?: string) {

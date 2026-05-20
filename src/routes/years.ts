@@ -56,9 +56,26 @@ router.get("/", requireAuth, async (req, res) => {
     Question.distinct("previousYear", { ...questionFilter, previousYear: { $nin: [null, ""] } }),
     Question.distinct("yearId", { ...questionFilter, yearId: { $nin: [null, ""] } }),
   ]);
+  console.log("[YEAR DEBUG][backend:/api/years:raw]", {
+    mode,
+    questionFilter,
+    yearDocs: yearDocs.map((item: any) => ({
+      id: String(item.id ?? item._id),
+      name: item.name,
+      label: item.label,
+      value: item.value,
+      examType: item.examType,
+    })),
+    questionYearValues,
+    questionExamYearValues,
+    questionPreviousYearValues,
+    questionYearIds,
+  });
 
   if (!mode) {
-    res.json(yearDocs.map((item) => normalizeYearResponse(item)));
+    const response = yearDocs.map((item) => normalizeYearResponse(item));
+    console.log("[YEAR DEBUG][backend:/api/years:response]", { mode, response });
+    res.json(response);
     return;
   }
 
@@ -102,6 +119,13 @@ router.get("/", requireAuth, async (req, res) => {
   });
 
   const response = [...byYear.values()].sort((a, b) => Number(b.value ?? b.name) - Number(a.value ?? a.name));
+  console.log("[YEAR DEBUG][backend:/api/years:response]", {
+    mode,
+    yearValueSet: [...yearValueSet],
+    yearIdStrings,
+    linkedYearDocs: linkedYearDocs.map((item: any) => String(item.id ?? item._id)),
+    response,
+  });
   res.json(response);
 });
 
