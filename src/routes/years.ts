@@ -45,6 +45,16 @@ function normalizeYearResponse(item: any, fallbackYear?: string | number) {
   };
 }
 
+function matchesYearMode(item: any, mode: string) {
+  const normalizedMode = String(mode || "").trim().toUpperCase();
+  if (!normalizedMode || normalizedMode === "BOTH" || normalizedMode === "ALL") return true;
+  const examType = String(item?.examType ?? item?.examCategory ?? "").trim().toUpperCase();
+  if (!examType) return true;
+  if (normalizedMode.startsWith("JEE")) return examType === "JEE";
+  if (normalizedMode.startsWith("NEET")) return examType === "NEET";
+  return examType === normalizedMode;
+}
+
 router.get("/", requireAuth, async (req, res) => {
   const mode = String(req.query["mode"] || "");
   const questionFilter = buildPaperModeFilter(mode);
@@ -88,7 +98,8 @@ router.get("/", requireAuth, async (req, res) => {
   const yearIdStrings = questionYearIds.map((value) => String(value)).filter(Boolean);
   const yearIdSet = new Set(yearIdStrings);
 
-  const linkedYearDocs = yearDocs.filter((item: any) => {
+  const modeYearDocs = yearDocs.filter((item: any) => matchesYearMode(item, mode));
+  const linkedYearDocs = modeYearDocs.filter((item: any) => {
     const id = String(item.id ?? item._id);
     const value = readYearValue(item);
     return yearIdSet.has(id) || (value !== null && yearValueSet.has(String(value))) || yearIdSet.has(String(item.name ?? item.label ?? ""));
@@ -106,7 +117,7 @@ router.get("/", requireAuth, async (req, res) => {
       });
 
   const byYear = new Map<string, any>();
-  [...linkedYearDocs, ...missingYearDocs].forEach((item) => {
+  [...modeYearDocs, ...linkedYearDocs, ...missingYearDocs].forEach((item) => {
     const normalized = normalizeYearResponse(item);
     const key = String(normalized.value ?? normalized.name ?? normalized.id);
     if (key) byYear.set(key, normalized);

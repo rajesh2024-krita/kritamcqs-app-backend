@@ -77,6 +77,30 @@ async function main() {
     .toArray();
   print("Question yearId values with no matching years record", invalidYearRefs);
 
+  const invalidYearRefSamples = await questions
+    .aggregate([
+      { $match: { yearId: { $nin: [null, ""] } } },
+      { $addFields: { yearObjectId: { $convert: { input: "$yearId", to: "objectId", onError: null, onNull: null } } } },
+      { $lookup: { from: "years", localField: "yearObjectId", foreignField: "_id", as: "yearDoc" } },
+      { $match: { yearDoc: { $size: 0 } } },
+      {
+        $project: {
+          _id: 1,
+          question: { $substrCP: ["$question", 0, 120] },
+          yearId: 1,
+          year: 1,
+          yearLabel: 1,
+          examYear: 1,
+          previousYear: 1,
+          examMode: 1,
+          exam: 1,
+        },
+      },
+      { $limit: 20 },
+    ])
+    .toArray();
+  print("Invalid yearId question samples", invalidYearRefSamples);
+
   const questionIndexes = await questions.indexes().catch((error) => ({ error: error.message }));
   print("questions indexes", questionIndexes);
 }
