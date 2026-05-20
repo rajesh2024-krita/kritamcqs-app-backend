@@ -117,11 +117,6 @@ router.post(
     try {
       const body = CreateTicketBody.parse(req.body);
       const user = req.user!;
-      const helpSettings = await HelpDeskSettings.findOneAndUpdate(
-        { key: "default" },
-        { $setOnInsert: { key: "default" } },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
-      );
       const ticketPayload = {
         ticketId: buildTicketId(),
         userId: req.userId!,
@@ -141,9 +136,7 @@ router.post(
           },
         ],
       };
-      const ticket = helpSettings.mode === "email"
-        ? ticketPayload
-        : await new SupportTicket(ticketPayload).save();
+      const ticket = await new SupportTicket(ticketPayload).save();
 
       await notifyAdmins(ticket, req.file);
       res.status(201).json({ ticket });

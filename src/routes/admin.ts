@@ -49,6 +49,7 @@ const QUESTION_ASSET_DIR = process.env["QUESTION_ASSET_DIR"]
   : path.resolve(process.cwd(), "../krita-neet-jee/public/uploads/question-assets");
 const INVOICE_ASSET_DIR = path.resolve(process.cwd(), "uploads", "invoice-assets");
 const SUPPORT_ASSET_DIR = path.resolve(process.cwd(), "uploads", "support");
+const NOTIFICATION_ASSET_DIR = path.resolve(process.cwd(), "uploads", "notifications");
 const IMAGE_URL_FIELDS = [
   "questionImageUrl",
   "optionAImageUrl",
@@ -2600,9 +2601,17 @@ function templatePayloadFromRow(row: Record<string, unknown>) {
   };
 }
 
-async function notificationAttachment(file?: Express.Multer.File) {
-  if (!file?.buffer) return [];
-  return [{ filename: file.originalname || "attachment", contentType: file.mimetype, content: file.buffer }];
+async function saveNotificationAttachment(file?: Express.Multer.File) {
+  if (!file?.buffer) return { attachmentUrl: "", attachmentName: "", emailAttachments: [] as any[] };
+  await fs.mkdir(NOTIFICATION_ASSET_DIR, { recursive: true });
+  const safeName = (file.originalname || "attachment").replace(/[^a-zA-Z0-9.\-_]/g, "_");
+  const filename = `${Date.now()}-${Math.random().toString(16).slice(2)}-${safeName}`;
+  await fs.writeFile(path.join(NOTIFICATION_ASSET_DIR, filename), file.buffer);
+  return {
+    attachmentUrl: `/uploads/notifications/${filename}`,
+    attachmentName: file.originalname || "attachment",
+    emailAttachments: [{ filename: file.originalname || "attachment", contentType: file.mimetype, content: file.buffer }],
+  };
 }
 
 router.get("/notifications", wrap(async (req, res) => {
@@ -2640,6 +2649,7 @@ router.post(["/notifications/send", "/notifications/broadcast"], upload.single("
   const users = await User.find(filters).select("_id name email mobile userType").limit(Math.min(Math.max(Number(body.limit || 500), 1), 5000));
   const now = new Date();
   const dedupePrefix = `admin-${type}-${now.getTime()}`;
+  const savedAttachment = await saveNotificationAttachment(req.file);
   const docs = users.map((user: any) => ({
     userId: String(user._id),
     type,
@@ -2648,6 +2658,8 @@ router.post(["/notifications/send", "/notifications/broadcast"], upload.single("
     dedupeKey: `${dedupePrefix}-${String(user._id)}`,
     visibleInApp: flags.inApp,
     linkUrl: String(body.linkUrl || body.buttonLink || body.button_link || ""),
+    attachmentUrl: savedAttachment.attachmentUrl,
+    attachmentName: savedAttachment.attachmentName,
     targetGroup: String(body.targetGroup || ""),
     deliveryMode,
     notificationStatus: flags.inApp ? "created" : "skipped",
@@ -2660,7 +2672,7 @@ router.post(["/notifications/send", "/notifications/broadcast"], upload.single("
   const notifications = docs.length ? await UserNotification.insertMany(docs, { ordered: false }) : [];
   let emailSent = 0;
   let emailSkipped = 0;
-  const attachments = await notificationAttachment(req.file);
+  const attachments = savedAttachment.emailAttachments;
   const variables = parseVariables(body.variables);
   if (flags.email) {
     const templateKey = String(body.templateKey || notificationTemplateKey(type));
@@ -2699,6 +2711,7 @@ router.post(["/notifications/send", "/notifications/broadcast"], upload.single("
           valid_until: body.validUntil || body.valid_until || body.expiryDate || body.expiry_date || "",
           current_date: now.toLocaleDateString("en-IN"),
           current_time: now.toLocaleTimeString("en-IN"),
+          attachment_name: savedAttachment.attachmentName,
           ...variables,
         }, attachments);
         if (result.skipped) {
