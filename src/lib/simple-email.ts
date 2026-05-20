@@ -37,43 +37,43 @@ function buildMimeMessage({ smtp, to, subject, text = "", html = "", attachments
     "MIME-Version: 1.0",
   ];
 
-  if (!html && !attachments.length) {
+  const hasHtml = String(html || "").trim().length > 0;
+  const hasAttachments = attachments.length > 0;
+
+  if (hasHtml && !hasAttachments) {
     return [
       ...headers,
-      "Content-Type: text/plain; charset=utf-8",
+      "Content-Type: text/html; charset=utf-8",
       "Content-Transfer-Encoding: 8bit",
       "",
-      text,
+      html,
     ].join("\r\n");
   }
 
   const mixedBoundary = `mixed_${Date.now()}_${Math.random().toString(16).slice(2)}`;
-  const altBoundary = `alt_${Date.now()}_${Math.random().toString(16).slice(2)}`;
   const parts = [
     ...headers,
     `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
     "",
-    `--${mixedBoundary}`,
-    `Content-Type: multipart/alternative; boundary="${altBoundary}"`,
-    "",
-    `--${altBoundary}`,
-    "Content-Type: text/plain; charset=utf-8",
-    "Content-Transfer-Encoding: 8bit",
-    "",
-    text || html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim(),
   ];
 
-  if (html) {
+  if (hasHtml) {
     parts.push(
-      `--${altBoundary}`,
+      `--${mixedBoundary}`,
       "Content-Type: text/html; charset=utf-8",
       "Content-Transfer-Encoding: 8bit",
       "",
       html,
     );
+  } else {
+    parts.push(
+      `--${mixedBoundary}`,
+      "Content-Type: text/plain; charset=utf-8",
+      "Content-Transfer-Encoding: 8bit",
+      "",
+      text,
+    );
   }
-
-  parts.push(`--${altBoundary}--`);
 
   for (const attachment of attachments) {
     const filename = escapeHeader(attachment.filename || "attachment");

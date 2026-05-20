@@ -445,6 +445,18 @@ export function renderEmailTemplate(template: any, variables: Record<string, unk
   };
 }
 
+function buildHtmlBody(htmlContent: string, textContent: string) {
+  const html = String(htmlContent || "").trim();
+  if (html) return html;
+
+  const text = String(textContent || "").trim();
+  const safeText = text
+    ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\r?\n/g, "<br/>")
+    : "This email contains no HTML content.";
+
+  return `<html><body><div style="font-family:Arial,Helvetica,sans-serif;color:#111;font-size:14px;line-height:1.5;">${safeText}</div></body></html>`;
+}
+
 export async function sendTemplatedEmail(templateKey: string, to: string, variables: Record<string, unknown>, attachments: EmailAttachment[] = []) {
   const settings = await InvoiceSettings.findOne({ key: "default" });
   const payload = normalizeEmailVariables(variables);
@@ -456,8 +468,10 @@ export async function sendTemplatedEmail(templateKey: string, to: string, variab
     : await resolveTemplate(templateKey);
   const rendered = template ? renderEmailTemplate(template, payload) : { subject: `Email template disabled: ${templateKey}`, textContent: "", htmlContent: "", variables: payload };
   
+  const htmlBody = buildHtmlBody(rendered.htmlContent, rendered.textContent);
+
   logger.info(
-    `[EMAIL] Sending template: ${templateKey} | To: ${to} | Found: ${template ? "yes" : "no"} | Variables: ${Object.keys(variables || {}).join(", ")}`
+    `[EMAIL] Sending template: ${templateKey} | To: ${to} | Found: ${template ? "yes" : "no"} | Variables: ${Object.keys(variables || {}).join(", ")} | htmlLength=${htmlBody.length}`
   );
 
   const log = await EmailLog.create({
@@ -495,8 +509,7 @@ export async function sendTemplatedEmail(templateKey: string, to: string, variab
       smtp: settings?.smtp || {},
       to,
       subject: rendered.subject,
-      text: rendered.textContent,
-      html: rendered.htmlContent,
+      html: htmlBody,
       attachments,
     });
     log.attempts = Number(log.attempts || 0) + 1;
