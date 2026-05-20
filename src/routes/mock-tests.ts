@@ -3,7 +3,7 @@ import { Chapter, MockTest, Question, Subject, Year, mongoose } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
 import { createLearningSession } from "../lib/learning";
-import { normalizeQuestionDocument } from "../lib/question-framework";
+import { normalizeQuestionDocument, resolveQuestionYearFields } from "../lib/question-framework";
 import {
   avoidRecentSequences,
   getRecentSessionQuestionIds,
@@ -345,8 +345,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
             chapterName: chapterName || normalized.chapterName,
             topicName: topicName || normalized.topicName,
             topicLabel: topicName || normalized.topicLabel,
-            year: normalized.year ?? (year as any)?.value ?? ((year as any)?.name ? Number((year as any).name) : undefined),
-            yearLabel: (year as any)?.label ?? (year as any)?.name ?? (normalized.year ? String(normalized.year) : undefined),
+            ...resolveQuestionYearFields(normalized, year as any),
           };
         }),
       ),

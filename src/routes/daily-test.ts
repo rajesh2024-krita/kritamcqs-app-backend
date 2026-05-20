@@ -17,7 +17,7 @@ import { z } from "zod";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
 import { createLearningSession, getSessionAttemptNumber } from "../lib/learning";
-import { normalizeQuestionDocument } from "../lib/question-framework";
+import { normalizeQuestionDocument, resolveQuestionYearFields } from "../lib/question-framework";
 import { getQuestionExamModes } from "../lib/subjects";
 import {
   avoidRecentSequences,
@@ -322,8 +322,7 @@ router.get("/daily-test", requireAuth, requireOnboardingComplete, async (req: Au
       const year = normalizedQuestion.yearId ? yearMap.get(String(normalizedQuestion.yearId)) : undefined;
       return {
         ...normalizedQuestion,
-        year: normalizedQuestion.year ?? (year as any)?.value ?? ((year as any)?.name ? Number((year as any).name) : undefined),
-        yearLabel: (year as any)?.label ?? (year as any)?.name ?? (normalizedQuestion.year ? String(normalizedQuestion.year) : undefined),
+        ...resolveQuestionYearFields(normalizedQuestion, year as any),
       };
     }),
   );

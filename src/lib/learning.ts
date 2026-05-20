@@ -13,7 +13,7 @@ import {
   Year,
   type IMode,
 } from "@api/db";
-import { getExamTypeLabel, normalizeQuestionDocument } from "./question-framework";
+import { getExamTypeLabel, normalizeQuestionDocument, resolveQuestionYearFields } from "./question-framework";
 
 type ModeKey = "NEET" | "JEE" | "BOTH";
 type SessionType = "test" | "practice" | "revision";
@@ -237,9 +237,7 @@ export async function buildQuestionDisplayMap(questionIds: string[]) {
       ...normalized,
       subjectName: subject?.name ?? normalized.subject,
       chapterName: chapter?.name,
-      yearId: normalized.yearId ?? year?.id,
-      year: normalized.year ?? (year as any)?.value ?? ((year as any)?.name ? Number((year as any).name) : undefined),
-      yearLabel: (year as any)?.label ?? (year as any)?.name ?? (normalized.year ? String(normalized.year) : undefined),
+      ...resolveQuestionYearFields(normalized, year as any),
       modeId: normalized.modeId,
       modeLabel: normalized.examMode,
       examTypeLabel: getExamTypeLabel(normalized.exam, normalized.examMode),

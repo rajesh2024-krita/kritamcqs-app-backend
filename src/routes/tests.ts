@@ -22,7 +22,7 @@ import {
   updateDailyAssignmentProgress,
 } from "../lib/learning";
 import { buildDifficultyQuery } from "../lib/difficulties";
-import { normalizeQuestionDocument } from "../lib/question-framework";
+import { normalizeQuestionDocument, resolveQuestionYearFields } from "../lib/question-framework";
 import { getQuestionExamModes, resolveSubjectIds } from "../lib/subjects";
 import {
   avoidRecentSequences,
@@ -476,8 +476,7 @@ router.post("/generate", requireAuth, requireOnboardingComplete, async (req: Aut
         const yearDoc = normalized.yearId ? yearMap.get(String(normalized.yearId)) : undefined;
         return {
           ...normalized,
-          year: normalized.year ?? (yearDoc as any)?.value ?? ((yearDoc as any)?.name ? Number((yearDoc as any).name) : undefined),
-          yearLabel: (yearDoc as any)?.label ?? (yearDoc as any)?.name ?? (normalized.year ? String(normalized.year) : undefined),
+          ...resolveQuestionYearFields(normalized, yearDoc as any),
         };
       }),
     );

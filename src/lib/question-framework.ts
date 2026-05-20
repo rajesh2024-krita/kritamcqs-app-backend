@@ -41,12 +41,42 @@ export function normalizeQuestionDocument(question: IQuestion | Record<string, a
   };
 }
 
-function readYearValue(...values: unknown[]) {
+export function readYearValue(...values: unknown[]) {
   for (const value of values) {
     const parsed = Number(value);
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+}
+
+export function normalizeYearDocument(year?: Record<string, any> | null) {
+  if (!year) return null;
+  const raw = typeof year.toJSON === "function" ? year.toJSON() : year;
+  const yearValue = readYearValue(raw.value, raw.name, raw.label);
+  const yearLabel = String(raw.label ?? raw.name ?? yearValue ?? "").trim();
+
+  return {
+    id: String(raw.id ?? raw._id ?? "").trim(),
+    name: String(raw.name ?? yearLabel).trim(),
+    label: yearLabel,
+    value: yearValue,
+    examType: raw.examType,
+  };
+}
+
+export function resolveQuestionYearFields(question: Record<string, any>, yearDoc?: Record<string, any> | null) {
+  const normalizedYear = normalizeYearDocument(yearDoc);
+  const yearValue = normalizedYear?.value ?? readYearValue(question.year, question.examYear, question.previousYear);
+  const yearLabel =
+    normalizedYear?.label ||
+    normalizedYear?.name ||
+    (yearValue ? String(yearValue) : undefined);
+
+  return {
+    yearId: normalizedYear?.id || question.yearId,
+    year: yearValue,
+    yearLabel,
+  };
 }
 
 export function getExamTypeLabel(exam?: string, examMode?: string) {

@@ -3,7 +3,7 @@ import { Chapter, Mode, Question, Subject, Year, mongoose } from "@api/db";
 import { requireAuth, requireAdmin, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
 import { buildDifficultyQuery, resolveDifficultySelection } from "../lib/difficulties";
-import { getExamTypeLabel, normalizeQuestionDocument } from "../lib/question-framework";
+import { getExamTypeLabel, normalizeQuestionDocument, resolveQuestionYearFields } from "../lib/question-framework";
 import {
   getQuestionExamModes,
   isValidExamSubjectCombination,
@@ -58,24 +58,6 @@ function buildYearMatch(year: unknown, yearIds: string[]) {
   }
 
   return yearClauses.length === 1 ? yearClauses[0] : { $or: yearClauses };
-}
-
-function readQuestionYearValue(question: Record<string, any>, yearDoc?: Record<string, any>) {
-  const candidates = [
-    question.year,
-    question.examYear,
-    question.previousYear,
-    yearDoc?.value,
-    yearDoc?.name,
-    yearDoc?.label,
-  ];
-
-  for (const candidate of candidates) {
-    const parsed = Number(candidate);
-    if (Number.isFinite(parsed)) return parsed;
-  }
-
-  return undefined;
 }
 
 function buildPaperModeMatch(mode?: string, exactMode?: string) {
@@ -205,14 +187,13 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
       const chapterDoc = chapterMap.get(String(normalized.chapterId));
       const yearDoc = normalized.yearId ? yearMap.get(String(normalized.yearId)) : undefined;
       const modeDoc = normalized.modeId ? modeMap.get(String(normalized.modeId)) : undefined;
-      const yearValue = readQuestionYearValue(normalized, yearDoc as any);
+      const yearFields = resolveQuestionYearFields(normalized, yearDoc as any);
 
       return {
         ...normalized,
         subjectName: normalized.subject ?? subjectDoc?.name,
         chapterName: chapterDoc?.name,
-        year: yearValue,
-        yearLabel: (yearDoc as any)?.label ?? (yearDoc as any)?.name ?? (yearValue ? String(yearValue) : undefined),
+        ...yearFields,
         modeLabel: modeDoc?.label ?? normalized.examMode,
         examTypeLabel: getExamTypeLabel(normalized.exam, normalized.examMode),
       };
