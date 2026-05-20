@@ -59,9 +59,9 @@ async function listenWithFallback(preferredPort: number) {
 
 (async () => {
   try {
-    await connect();
+    const connection = await connect();
     startExpiryReminderWorker();
-    logger.info("Connected to MongoDB");
+    logger.info(connection, "Connected to MongoDB");
   } catch (err) {
     logger.error({ err }, "Failed to connect to MongoDB");
     process.exit(1);

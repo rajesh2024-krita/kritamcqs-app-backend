@@ -10,7 +10,7 @@ function uriHasDatabaseName(uri: string) {
   }
 }
 
-export async function connect(): Promise<void> {
+export async function connect(): Promise<{ databaseName: string; host: string }> {
   const uri = process.env["MONGODB_URI"];
   if (!uri) {
     throw new Error("MONGODB_URI environment variable is required. Please add your MongoDB connection string.");
@@ -18,6 +18,11 @@ export async function connect(): Promise<void> {
 
   const dbName = process.env["MONGODB_DB_NAME"] || (!uriHasDatabaseName(uri) ? "kritamcqs" : undefined);
   await mongoose.connect(uri, dbName ? { dbName } : undefined);
+
+  return {
+    databaseName: mongoose.connection.db?.databaseName ?? dbName ?? "",
+    host: mongoose.connection.host,
+  };
 }
 
 export { mongoose };
