@@ -1,11 +1,23 @@
 import mongoose from "mongoose";
 
+function uriHasDatabaseName(uri: string) {
+  try {
+    const parsed = new URL(uri);
+    const databaseName = parsed.pathname.replace(/^\/+/, "").trim();
+    return Boolean(databaseName);
+  } catch {
+    return /mongodb(?:\+srv)?:\/\/[^/]+\/[^?]+/.test(uri);
+  }
+}
+
 export async function connect(): Promise<void> {
   const uri = process.env["MONGODB_URI"];
   if (!uri) {
     throw new Error("MONGODB_URI environment variable is required. Please add your MongoDB connection string.");
   }
-  await mongoose.connect(uri);
+
+  const dbName = process.env["MONGODB_DB_NAME"] || (!uriHasDatabaseName(uri) ? "kritamcqs" : undefined);
+  await mongoose.connect(uri, dbName ? { dbName } : undefined);
 }
 
 export { mongoose };
