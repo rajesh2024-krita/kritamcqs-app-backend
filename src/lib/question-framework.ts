@@ -43,8 +43,17 @@ export function normalizeQuestionDocument(question: IQuestion | Record<string, a
 
 export function readYearValue(...values: unknown[]) {
   for (const value of values) {
-    const parsed = Number(value);
-    if (Number.isFinite(parsed)) return parsed;
+    const raw = String(value ?? "").trim();
+    if (!raw) continue;
+
+    const parsed = Number(raw);
+    if (/^\d{4}$/.test(raw) && Number.isFinite(parsed)) return parsed;
+
+    const match = raw.match(/\b(19|20)\d{2}\b/);
+    if (match?.[0]) {
+      const matchedYear = Number(match[0]);
+      if (Number.isFinite(matchedYear)) return matchedYear;
+    }
   }
   return undefined;
 }
@@ -62,7 +71,6 @@ export function normalizeYearDocument(year?: Record<string, any> | null) {
     value: yearValue,
     examType: raw.examType,
   };
-  console.log("[YEAR DEBUG][backend:normalizeYearDocument]", { raw, normalized });
   return normalized;
 }
 
@@ -79,18 +87,6 @@ export function resolveQuestionYearFields(question: Record<string, any>, yearDoc
     year: yearValue,
     yearLabel,
   };
-  console.log("[YEAR DEBUG][backend:resolveQuestionYearFields]", {
-    questionId: question.id ?? question._id,
-    incoming: {
-      yearId: question.yearId,
-      year: question.year,
-      examYear: question.examYear,
-      previousYear: question.previousYear,
-      yearLabel: question.yearLabel,
-    },
-    matchedYear: normalizedYear,
-    resolved,
-  });
   return resolved;
 }
 

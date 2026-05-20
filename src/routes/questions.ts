@@ -3,7 +3,7 @@ import { Chapter, Mode, Question, Subject, Year, mongoose } from "@api/db";
 import { requireAuth, requireAdmin, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
 import { buildDifficultyQuery, resolveDifficultySelection } from "../lib/difficulties";
-import { getExamTypeLabel, normalizeQuestionDocument, resolveQuestionYearFields } from "../lib/question-framework";
+import { getExamTypeLabel, normalizeQuestionDocument, readYearValue, resolveQuestionYearFields } from "../lib/question-framework";
 import {
   getQuestionExamModes,
   isValidExamSubjectCombination,
@@ -156,28 +156,11 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
   }
   if (req.query["year"]) {
     const requestedYear = Number(req.query["year"]);
-    const yearText = String(req.query["year"]).trim();
     const yearDocs = Number.isFinite(requestedYear)
-      ? await Year.find({
-          $or: [
-            { value: requestedYear },
-            { name: yearText },
-            { label: yearText },
-          ],
-        }).select("_id")
+      ? (await Year.find({}).select("_id name label value").lean())
+          .filter((item: any) => readYearValue(item.value, item.name, item.label) === requestedYear)
       : [];
     const yearIds = yearDocs.map((item) => String(item._id));
-    console.log("[YEAR DEBUG][backend:/api/questions:yearFilter]", {
-      requestedYear: req.query["year"],
-      yearDocs: yearDocs.map((item: any) => ({
-        id: String(item._id),
-        name: item.name,
-        label: item.label,
-        value: item.value,
-        examType: item.examType,
-      })),
-      yearIds,
-    });
     aggregateClauses.push(buildYearMatch(req.query["year"], yearIds));
   }
   if (req.query["yearId"]) aggregateClauses.push(buildFlexibleSingleIdMatch("yearId", String(req.query["yearId"]))!);
@@ -193,12 +176,6 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
     { $limit: limit ? parseInt(limit) : 500 },
     { $project: { _id: 1 } },
   ]);
-  console.log("[YEAR DEBUG][backend:/api/questions:aggregate]", {
-    query: req.query,
-    aggregateMatch,
-    matchedCount: questionIds.length,
-    matchedIdsSample: questionIds.slice(0, 10).map((item: any) => String(item._id)),
-  });
   const orderedIds = questionIds.map((item: any) => item._id);
 
   const [questions, subjects, chapters, modes] = await Promise.all([
@@ -234,24 +211,6 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
   const modeMap = new Map(modes.map((item) => [item.id, item]));
 
   const questionMap = new Map(questions.map((question: any) => [String(question._id), question]));
-  console.log("[YEAR DEBUG][backend:/api/questions:yearMap]", {
-    orderedCount: orderedIds.length,
-    yearMap: [...yearMap.values()].map((item: any) => ({
-      id: String(item.id ?? item._id),
-      name: item.name,
-      label: item.label,
-      value: item.value,
-      examType: item.examType,
-    })),
-    questionSample: questions.slice(0, 10).map((question: any) => ({
-      id: String(question._id ?? question.id),
-      yearId: question.yearId,
-      year: question.year,
-      examYear: question.examYear,
-      previousYear: question.previousYear,
-    })),
-  });
-
   res.json(
     orderedIds.map((id: any) => questionMap.get(String(id))).filter(Boolean).map((question) => {
       const normalized = normalizeQuestionDocument(question);
