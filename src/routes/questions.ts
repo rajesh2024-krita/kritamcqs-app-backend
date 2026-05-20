@@ -21,6 +21,25 @@ function buildIdVariants(ids: Array<string | number>) {
   return [...stringIds, ...objectIds];
 }
 
+function toIdString(value: unknown) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string" || typeof value === "number") return String(value).trim();
+  if (Buffer.isBuffer(value)) {
+    return Array.from(value, (byte) => Number(byte).toString(16).padStart(2, "0")).join("");
+  }
+  if (value && typeof value === "object") {
+    const objectValue: any = value;
+    if (typeof objectValue.toHexString === "function") return String(objectValue.toHexString()).trim();
+    if (typeof objectValue.$oid === "string") return String(objectValue.$oid).trim();
+    if (objectValue.type === "Buffer" && Array.isArray(objectValue.data)) {
+      return objectValue.data.map((byte: number) => Number(byte).toString(16).padStart(2, "0")).join("");
+    }
+    const nested = objectValue.id ?? objectValue._id;
+    if (nested !== undefined) return toIdString(nested);
+  }
+  return String(value).trim();
+}
+
 function buildFlexibleIdMatch(field: "chapterId" | "subjectId", ids?: Array<string | number>) {
   const normalizedIds = ids?.map((value) => String(value)).filter(Boolean) ?? [];
   if (normalizedIds.length === 0) return undefined;
@@ -182,17 +201,36 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
   });
   const orderedIds = questionIds.map((item: any) => item._id);
 
-  const [questions, subjects, chapters, years, modes] = await Promise.all([
+  const [questions, subjects, chapters, modes] = await Promise.all([
     orderedIds.length > 0 ? Question.find({ _id: { $in: orderedIds } }).populate("questionTypeId") : Promise.resolve([]),
     Subject.find({}),
     Chapter.find({}),
-    Year.find({}),
     Mode.find({}),
   ]);
+  const questionYearIds = [...new Set(questions.map((question: any) => toIdString(question?.yearId)).filter(Boolean))];
+  const years = questionYearIds.length
+    ? await Year.find({
+        $or: [
+          { _id: { $in: questionYearIds.filter((id) => mongoose.isValidObjectId(id)).map((id) => new mongoose.Types.ObjectId(id)) } },
+          { id: { $in: questionYearIds } },
+          { name: { $in: questionYearIds } },
+          { label: { $in: questionYearIds } },
+        ],
+      })
+    : [];
 
   const subjectMap = new Map(subjects.map((item) => [item.id, item]));
   const chapterMap = new Map(chapters.map((item) => [item.id, item]));
-  const yearMap = new Map(years.map((item) => [item.id, item]));
+  const yearMap = new Map(years.flatMap((item: any) => {
+    const keys = [
+      toIdString(item.id),
+      toIdString(item._id),
+      String(item.name ?? "").trim(),
+      String(item.label ?? "").trim(),
+      String(item.value ?? "").trim(),
+    ].filter(Boolean);
+    return keys.map((key) => [key, item] as const);
+  }));
   const modeMap = new Map(modes.map((item) => [item.id, item]));
 
   const questionMap = new Map(questions.map((question: any) => [String(question._id), question]));
@@ -219,7 +257,7 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
       const normalized = normalizeQuestionDocument(question);
       const subjectDoc = subjectMap.get(String(normalized.subjectId));
       const chapterDoc = chapterMap.get(String(normalized.chapterId));
-      const yearDoc = normalized.yearId ? yearMap.get(String(normalized.yearId)) : undefined;
+      const yearDoc = normalized.yearId ? yearMap.get(toIdString(normalized.yearId)) : undefined;
       const modeDoc = normalized.modeId ? modeMap.get(String(normalized.modeId)) : undefined;
       const yearFields = resolveQuestionYearFields(normalized, yearDoc as any);
 
