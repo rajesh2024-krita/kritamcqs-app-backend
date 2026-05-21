@@ -20,6 +20,10 @@ export interface IInvoiceSettings extends Document {
   fields: Array<{ id: string; label: string; x: number; y: number; size: number; enabled: boolean }>;
   activeTemplateId?: string;
   activeTemplateName?: string;
+  connectedTemplateId?: string;
+  connectedTemplateName?: string;
+  connectedTemplateAt?: Date;
+  connectionStatus?: string;
   smtp: {
     host?: string;
     port?: number;
@@ -79,6 +83,10 @@ const invoiceSettingsSchema = new Schema<IInvoiceSettings>(
     fields: { type: [fieldSchema], default: [] },
     activeTemplateId: { type: String, default: "" },
     activeTemplateName: { type: String, default: "" },
+    connectedTemplateId: { type: String, default: "" },
+    connectedTemplateName: { type: String, default: "" },
+    connectedTemplateAt: Date,
+    connectionStatus: { type: String, default: "not_connected" },
     page: { type: Schema.Types.Mixed, default: { size: "A4", orientation: "portrait", margin: 32, snapToGrid: true, gridSize: 10 } },
     reusableBlocks: { type: [Schema.Types.Mixed], default: [] },
     versions: { type: [Schema.Types.Mixed], default: [] },

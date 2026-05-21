@@ -38,7 +38,7 @@ import type { AuthenticatedRequest } from "../middlewares/auth";
 import { requireAdmin } from "../middlewares/auth";
 import { resolveDifficultySelection } from "../lib/difficulties";
 import { getExamTypeLabel, normalizeQuestionDocument } from "../lib/question-framework";
-import { generateInvoiceForSubscription, getActiveInvoiceTemplate, getInvoiceSettings, getNotificationSettings, processExpiryReminders, regenerateInvoicePdf, renderInvoicePdf } from "../lib/invoices";
+import { generateInvoiceForSubscription, getActiveInvoiceTemplate, getConnectedInvoiceTemplate, getInvoiceSettings, getNotificationSettings, processExpiryReminders, regenerateInvoicePdf, renderInvoicePdf, requireConnectedInvoiceTemplate } from "../lib/invoices";
 import { COMMON_EMAIL_VARIABLES, EMAIL_TEMPLATE_DEFINITIONS, EMAIL_TEMPLATE_KEYS, buildTemplateFromDefinition, buildTemplatePreview, extractTemplateVariables, resolveTemplate, sampleEmailVariables, sendTemplatedEmail, templateVariablesFor, validateTemplateVariables } from "../lib/email-templates";
 
 const router = Router();
@@ -2109,6 +2109,15 @@ router.post("/invoice-settings", wrap(async (req, res) => {
     const active = getActiveInvoiceTemplate(existing);
     existing.activeTemplateId = active?.id || "";
     existing.activeTemplateName = active?.name || "";
+    const requestedConnectedId = String(body.connectedTemplateId ?? existing.connectedTemplateId ?? "");
+    const connected = requestedConnectedId
+      ? blocks.find((block: any) => block.type === "fabric-template" && String(block.id) === requestedConnectedId)
+      : null;
+    existing.connectedTemplateId = connected?.id || "";
+    existing.connectedTemplateName = connected?.name || "";
+    existing.connectedTemplateAt = connected ? (existing.connectedTemplateAt || new Date()) : undefined;
+    existing.connectionStatus = connected ? "connected" : "not_connected";
+    existing.reusableBlocks = (existing.reusableBlocks as any[]).map((block: any) => block.type === "fabric-template" ? { ...block, connected: connected ? String(block.id) === String(connected.id) : false } : block) as any;
     if (Array.isArray(active?.fields) && active.fields.length) existing.fields = normalizeFields(active.fields) as any;
   }
   existing.defaultTemplate = body.defaultTemplate === undefined ? existing.defaultTemplate : Boolean(body.defaultTemplate);
@@ -2136,6 +2145,29 @@ router.post("/invoice-settings", wrap(async (req, res) => {
   sendSuccess(res, existing.toJSON(), { message: "Invoice settings saved" });
 }));
 
+router.post("/invoice-settings/connect-template", wrap(async (req, res) => {
+  const settings = await getInvoiceSettings();
+  const templateId = String(req.body?.templateId || "").trim();
+  if (!templateId) throw Object.assign(new Error("Select an invoice template to connect"), { statusCode: 400 });
+  const blocks = Array.isArray(settings.reusableBlocks) ? settings.reusableBlocks : [];
+  const template = blocks.find((block: any) => block?.type === "fabric-template" && String(block.id) === templateId);
+  if (!template) throw Object.assign(new Error("Invoice template not found"), { statusCode: 404 });
+  if (!String(template.htmlCode || "").trim() || !String(template.cssCode || "").trim()) {
+    throw Object.assign(new Error("Only Invoice Editor HTML/CSS templates can be connected to email"), { statusCode: 400 });
+  }
+  settings.reusableBlocks = blocks.map((block: any) => block?.type === "fabric-template"
+    ? { ...block, active: String(block.id) === templateId, connected: String(block.id) === templateId, connectedAt: String(block.id) === templateId ? new Date().toISOString() : undefined }
+    : block) as any;
+  settings.activeTemplateId = template.id || "";
+  settings.activeTemplateName = template.name || "Invoice Template";
+  settings.connectedTemplateId = template.id || "";
+  settings.connectedTemplateName = template.name || "Invoice Template";
+  settings.connectedTemplateAt = new Date();
+  settings.connectionStatus = "connected";
+  await settings.save();
+  sendSuccess(res, settings.toJSON(), { message: "Invoice template successfully connected to email" });
+}));
+
 router.post("/invoice-settings/test-email", wrap(async (req, res) => {
   const settings = await getInvoiceSettings();
   const to = String(req.body?.to || settings.companyEmail || settings.smtp?.fromEmail || "").trim();
@@ -2156,6 +2188,7 @@ router.post("/invoice-settings/test-email", wrap(async (req, res) => {
 
 router.post("/invoice-settings/test-invoice", wrap(async (req, res) => {
   const settings = await getInvoiceSettings();
+  requireConnectedInvoiceTemplate(settings);
   const to = String(req.body?.to || settings.companyEmail || settings.smtp?.fromEmail || "").trim();
   if (!to) throw Object.assign(new Error("Test recipient email is required"), { statusCode: 400 });
   const now = new Date();
@@ -2207,7 +2240,7 @@ router.post("/invoice-settings/test-invoice", wrap(async (req, res) => {
       total: testAmountBeforeCharges,
     }],
   };
-  const pdf = await renderInvoicePdf(sampleInvoice, settings, { planName: "Premium Plan" });
+  const pdf = await renderInvoicePdf(sampleInvoice, settings, { planName: "Premium Plan" }, { requireConnectedTemplate: true });
   const result = await sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.INVOICE_TEST, to, {
     user_name: sampleInvoice.userName,
     customer_name: sampleInvoice.userName,
@@ -2330,11 +2363,11 @@ router.get("/invoices/:id", wrap(async (req, res) => {
 
 router.post("/invoices", wrap(async (req, res) => {
   const settings = await getInvoiceSettings();
-  const active = getActiveInvoiceTemplate(settings);
+  const connected = requireConnectedInvoiceTemplate(settings);
   const payload = normalizeInvoicePayload({
     ...(req.body ?? {}),
-    templateId: req.body?.templateId || active?.id || settings.activeTemplateId || "",
-    templateName: req.body?.templateName || active?.name || settings.activeTemplateName || "",
+    templateId: connected.id || "",
+    templateName: connected.name || settings.connectedTemplateName || "",
   });
   const invoice = await Invoice.create({
     ...payload,
@@ -2342,7 +2375,7 @@ router.post("/invoices", wrap(async (req, res) => {
     issuedAt: payload.invoiceDate || new Date(),
     activityLogs: [{ action: "created", message: "Manual invoice created", at: new Date() }],
   });
-  await regenerateInvoicePdf(invoice, settings);
+  await regenerateInvoicePdf(invoice, settings, {}, { requireConnectedTemplate: true });
   await invoice.save();
   sendSuccess(res, invoice.toJSON(), { status: 201, message: "Invoice created" });
 }));
@@ -2353,7 +2386,7 @@ router.put("/invoices/:id", wrap(async (req, res) => {
   if (!invoice) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
   Object.assign(invoice, normalizeInvoicePayload(req.body ?? {}, invoice.toJSON()));
   invoice.activityLogs = [...(invoice.activityLogs || []), { action: "updated", message: "Invoice edited", at: new Date() }] as any;
-  await regenerateInvoicePdf(invoice);
+  await regenerateInvoicePdf(invoice, undefined, {}, { requireConnectedTemplate: true });
   await invoice.save();
   sendSuccess(res, invoice.toJSON(), { message: "Invoice updated" });
 }));
@@ -2380,8 +2413,11 @@ router.post("/invoices/:id/send", wrap(async (req, res) => {
   const invoice = await Invoice.findById(req.params.id);
   if (!invoice) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
   const settings = await getInvoiceSettings();
+  const connected = requireConnectedInvoiceTemplate(settings);
   if (!invoice.userEmail) throw Object.assign(new Error("Invoice customer email is missing"), { statusCode: 400 });
-  const pdf = await regenerateInvoicePdf(invoice, settings);
+  invoice.templateId = connected.id || invoice.templateId;
+  invoice.templateName = connected.name || invoice.templateName;
+  const pdf = await regenerateInvoicePdf(invoice, settings, {}, { requireConnectedTemplate: true });
   const result = await sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.INVOICE_GENERATED, invoice.userEmail, {
     user_name: invoice.userName || "Customer",
     customer_name: invoice.userName || "Customer",
@@ -2438,7 +2474,7 @@ router.get("/invoices/:id/pdf", wrap(async (req, res) => {
   assertObjectId(String(req.params.id), "invoice");
   const invoice = await Invoice.findById(req.params.id);
   if (!invoice) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
-  const pdf = await regenerateInvoicePdf(invoice);
+  const pdf = await regenerateInvoicePdf(invoice, undefined, {}, { requireConnectedTemplate: true });
   await invoice.save();
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `attachment; filename="${invoice.invoiceNumber}.pdf"`);

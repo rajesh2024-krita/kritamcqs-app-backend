@@ -164,6 +164,11 @@ function textLines(text: unknown, x: number, y: number, size = 10, lineHeight = 
     .map((line, index) => textOp(line, x, y + index * lineHeight, size));
 }
 
+function truncateText(value: unknown, max = 80) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 1))}...` : text;
+}
+
 function pageMetricsFromFields(fields: any[]) {
   const first = fields.find((field) => field?.raw?.pageWidth && field?.raw?.pageHeight);
   const pageWidth = Number(first?.raw?.pageWidth || 794);
@@ -202,24 +207,55 @@ function imageOp(name: string, x: number, y: number, width: number, height: numb
   return `q ${width} 0 0 ${height} ${x} ${842 - y - height} cm /${name} Do Q`;
 }
 
-function settingsWithInvoiceTemplate(settings: any, invoice: any = {}) {
-  const source = settings?.toJSON?.() || { ...(settings || {}) };
-  const templates = Array.isArray(source.reusableBlocks)
-    ? source.reusableBlocks.filter((item: any) => item?.type === "fabric-template")
+function invoiceTemplates(settings: any) {
+  return Array.isArray(settings?.reusableBlocks)
+    ? settings.reusableBlocks.filter((item: any) => item?.type === "fabric-template")
     : [];
+}
+
+function connectedTemplate(settings: any) {
+  const templates = invoiceTemplates(settings);
+  return templates.find((item: any) => String(item.id) === String(settings?.connectedTemplateId || "") && item.connected)
+    || templates.find((item: any) => item.connected)
+    || null;
+}
+
+function assertConnectedTemplate(settings: any) {
+  const template = connectedTemplate(settings);
+  if (!template || !String(template.htmlCode || "").trim() || !String(template.cssCode || "").trim()) {
+    throw Object.assign(new Error("No invoice template is connected to email. Connect an Invoice Editor template before sending invoice emails."), { statusCode: 400 });
+  }
+  return template;
+}
+
+function settingsWithInvoiceTemplate(settings: any, invoice: any = {}, options: { preferActiveTemplate?: boolean; requireConnectedTemplate?: boolean } = {}) {
+  const source = settings?.toJSON?.() || { ...(settings || {}) };
+  const templates = invoiceTemplates(source);
+  const emailTemplate = options.requireConnectedTemplate ? assertConnectedTemplate(source) : connectedTemplate(source);
   const invoiceTemplate = invoice?.templateId
     ? templates.find((item: any) => String(item.id) === String(invoice.templateId))
     : null;
-  const active = invoiceTemplate || templates.find((item: any) => item.active) || templates.find((item: any) => String(item.id) === String(source.activeTemplateId)) || templates[0];
+  const currentActiveTemplate = templates.find((item: any) => item.active) || templates.find((item: any) => String(item.id) === String(source.activeTemplateId));
+  const active = options.preferActiveTemplate
+    ? emailTemplate || currentActiveTemplate || invoiceTemplate || templates[0]
+    : emailTemplate || invoiceTemplate || currentActiveTemplate || templates[0];
   if (Array.isArray(active?.fields) && active.fields.length) {
     return {
       ...source,
       fields: active.fields,
       activeTemplateId: active.id || source.activeTemplateId,
       activeTemplateName: active.name || source.activeTemplateName,
+      activeTemplateHtmlCode: active.htmlCode || "",
+      activeTemplateCssCode: active.cssCode || "",
     };
   }
-  return source;
+  return {
+    ...source,
+    activeTemplateId: active?.id || source.activeTemplateId,
+    activeTemplateName: active?.name || source.activeTemplateName,
+    activeTemplateHtmlCode: active?.htmlCode || "",
+    activeTemplateCssCode: active?.cssCode || "",
+  };
 }
 
 function fieldGeometry(field: any, metrics: any) {
@@ -424,13 +460,20 @@ function invoiceData(input: any) {
       : Number(derivedChargeGstPercent.toFixed(2));
   return {
     invoiceNumber: input.invoiceNumber,
+    invoice_number: input.invoiceNumber,
     issuedAt: new Date(input.issuedAt || input.invoiceDate).toLocaleDateString("en-IN"),
     invoiceDate: new Date(input.invoiceDate || input.issuedAt).toLocaleDateString("en-IN"),
+    invoice_date: new Date(input.invoiceDate || input.issuedAt).toLocaleDateString("en-IN"),
     dueDate: input.dueDate ? new Date(input.dueDate).toLocaleDateString("en-IN") : "",
+    due_date: input.dueDate ? new Date(input.dueDate).toLocaleDateString("en-IN") : "",
     userName: input.userName || "Learner",
+    customer_name: input.customerCompany?.name || input.userName || "Learner",
     userEmail: input.userEmail || "",
+    customer_email: input.customerCompany?.email || input.userEmail || "",
     userMobile: input.userMobile || "",
+    customer_phone: input.customerCompany?.phone || input.userMobile || "",
     customerAddress: input.customerCompany?.address || "",
+    customer_address: input.customerCompany?.address || "",
     customerGstin: input.customerCompany?.gstin || "",
     planName: input.planName || input.planId,
     productDescription: firstItem.description || "Premium subscription purchase",
@@ -439,7 +482,9 @@ function invoiceData(input: any) {
     baseAmount: formatCurrency(input.subtotal ?? firstItem.price ?? input.amount),
     discountAmount: formatCurrency(input.discountTotal || 0),
     taxPercent: Number(input.taxDetails?.taxPercent ?? input.items?.[0]?.tax ?? 0),
+    tax_rate: `${Number(input.taxDetails?.taxPercent ?? input.items?.[0]?.tax ?? 0)}%`,
     taxAmount: formatCurrency(input.taxTotal || 0),
+    tax_amount: formatCurrency(input.taxTotal || 0),
     convenienceCharge: formatCurrency(convenienceCharge),
     convenienceChargeGstPercent: displayChargeGstPercent,
     convenienceChargeGst: formatCurrency(convenienceChargeGst),
@@ -447,17 +492,25 @@ function invoiceData(input: any) {
     finalAmount: formatCurrency(input.grandTotal || input.amount),
     amount: formatCurrency(input.amount || input.grandTotal),
     totalAmount: formatCurrency(input.grandTotal || input.amount),
+    total_amount: formatCurrency(input.grandTotal || input.amount),
+    subtotal: formatCurrency(input.subtotal ?? firstItem.price ?? input.amount),
+    discount: formatCurrency(input.discountTotal || 0),
     currency: input.currency || "INR",
     paymentStatus: String(input.status || "paid").toUpperCase(),
     transactionId: input.transactionId || "",
+    transaction_id: input.transactionId || "",
     paidStampText: input.paidStampText || "PAID",
+    company_name: input.billingCompany?.name || input.companyName || "Krita NEET JEE",
+    company_address: input.billingCompany?.address || input.companyAddress || "",
+    company_email: input.billingCompany?.email || input.companyEmail || "",
+    company_phone: input.billingCompany?.phone || input.companyPhone || "",
+    payment_terms: input.terms || "Net 15 Days",
+    notes: input.notes || "Thank you for your business!",
   };
 }
 
 function activeTemplate(settings: any) {
-  const templates = Array.isArray(settings?.reusableBlocks)
-    ? settings.reusableBlocks.filter((item: any) => item?.type === "fabric-template")
-    : [];
+  const templates = invoiceTemplates(settings);
   return templates.find((item: any) => item.active) || templates[0] || null;
 }
 
@@ -465,10 +518,93 @@ export function getActiveInvoiceTemplate(settings: any) {
   return activeTemplate(settings);
 }
 
-export async function renderInvoicePdf(invoice: any, settings: any, extras: Record<string, unknown> = {}) {
+export function getConnectedInvoiceTemplate(settings: any) {
+  return connectedTemplate(settings);
+}
+
+export function requireConnectedInvoiceTemplate(settings: any) {
+  return assertConnectedTemplate(settings);
+}
+
+function renderHtmlStyleInvoicePdf(source: any, effectiveSettings: any, data: Record<string, any>) {
+  const currency = source.currency || "INR";
+  const items = Array.isArray(source.items) && source.items.length
+    ? source.items
+    : [{ product: data.planName || "Premium Subscription", description: data.productDescription || "", quantity: 1, price: source.amount || 0, discount: 0, tax: 0, total: source.amount || 0 }];
+  const company = {
+    name: source.billingCompany?.name || effectiveSettings.companyName || data.company_name || "Krita NEET JEE",
+    address: source.billingCompany?.address || effectiveSettings.companyAddress || data.company_address || "",
+    email: source.billingCompany?.email || effectiveSettings.companyEmail || data.company_email || "",
+    phone: source.billingCompany?.phone || effectiveSettings.companyPhone || data.company_phone || "",
+  };
+  const customer = {
+    name: source.customerCompany?.name || source.userName || data.customer_name || "Customer",
+    email: source.customerCompany?.email || source.userEmail || data.customer_email || "",
+    phone: source.customerCompany?.phone || source.userMobile || data.customer_phone || "",
+    address: source.customerCompany?.address || data.customer_address || "",
+  };
+  const rows = items.slice(0, 10);
+  const content: string[] = [
+    fillRectOp(0, 0, 595, 842, 0.96),
+    colorRectOp(55, 60, 485, 690, "#ffffff", "#ffffff", 0),
+    styledTextOp("INVOICE", 75, 95, 9, "#2563eb", { fontWeight: "bold" }),
+    styledTextOp(`Invoice #${data.invoiceNumber || "-"}`, 75, 120, 24, "#020617", { fontWeight: "bold" }),
+    styledTextOp(`Date: ${data.invoiceDate || "-"}`, 75, 145, 10, "#334155", {}),
+    ...(data.dueDate ? [styledTextOp(`Due: ${data.dueDate}`, 75, 162, 10, "#334155", {})] : []),
+    styledTextOp(truncateText(company.name, 34), 405, 95, 11, "#020617", { fontWeight: "bold" }),
+    ...textLines([company.address, company.email, company.phone].filter(Boolean).join("\n"), 405, 110, 9, 12),
+    styledTextOp("BILL TO", 75, 205, 8, "#94a3b8", { fontWeight: "bold" }),
+    styledTextOp(truncateText(customer.name, 42), 75, 222, 11, "#020617", { fontWeight: "bold" }),
+    ...textLines([customer.address, customer.email, customer.phone].filter(Boolean).join("\n"), 75, 238, 9, 12),
+    styledTextOp("TOTAL DUE", 365, 205, 8, "#94a3b8", { fontWeight: "bold" }),
+    styledTextOp(data.totalAmount || data.amount || `${currency} 0.00`, 365, 222, 12, "#020617", { fontWeight: "bold" }),
+    colorRectOp(75, 285, 445, 32, "#f8fafc", "#dbe3ef", 0.6),
+    styledTextOp("ITEM", 85, 305, 9, "#0f172a", { fontWeight: "bold" }),
+    styledTextOp("QTY", 330, 305, 9, "#0f172a", { fontWeight: "bold" }),
+    styledTextOp("PRICE", 385, 305, 9, "#0f172a", { fontWeight: "bold" }),
+    styledTextOp("TOTAL", 465, 305, 9, "#0f172a", { fontWeight: "bold" }),
+  ];
+
+  rows.forEach((item: any, index: number) => {
+    const y = 317 + index * 34;
+    const quantity = Number(item.quantity || 1);
+    const price = Number(item.price || 0);
+    const total = Number(item.total ?? Math.max(0, quantity * price - Number(item.discount || 0)) + (Math.max(0, quantity * price - Number(item.discount || 0)) * Number(item.tax || 0)) / 100);
+    content.push(
+      colorRectOp(75, y, 445, 34, "#ffffff", "#dbe3ef", 0.6),
+      styledTextOp(truncateText(item.product || item.description || data.planName || "Item", 48), 85, y + 20, 9, "#0f172a", {}),
+      styledTextOp(String(quantity), 330, y + 20, 9, "#0f172a", {}),
+      styledTextOp(`${currency} ${price.toFixed(2)}`, 385, y + 20, 9, "#0f172a", {}),
+      styledTextOp(`${currency} ${total.toFixed(2)}`, 465, y + 20, 9, "#0f172a", {}),
+    );
+  });
+
+  const totalsY = Math.max(460, 330 + rows.length * 34);
+  content.push(
+    lineOp(75, totalsY, 520, totalsY),
+    styledTextOp("Subtotal", 360, totalsY + 26, 9, "#475569", {}),
+    styledTextOp(data.baseAmount || data.subtotal || `${currency} 0.00`, 455, totalsY + 26, 9, "#0f172a", { fontWeight: "bold" }),
+    styledTextOp("Tax", 360, totalsY + 45, 9, "#475569", {}),
+    styledTextOp(data.taxAmount || data.tax_amount || `${currency} 0.00`, 455, totalsY + 45, 9, "#0f172a", { fontWeight: "bold" }),
+    styledTextOp("Discount", 360, totalsY + 64, 9, "#475569", {}),
+    styledTextOp(data.discountAmount || data.discount || `${currency} 0.00`, 455, totalsY + 64, 9, "#0f172a", { fontWeight: "bold" }),
+    styledTextOp("Total", 360, totalsY + 88, 12, "#020617", { fontWeight: "bold" }),
+    styledTextOp(data.totalAmount || data.total_amount || `${currency} 0.00`, 455, totalsY + 88, 12, "#020617", { fontWeight: "bold" }),
+    lineOp(75, totalsY + 120, 520, totalsY + 120),
+    styledTextOp(truncateText(source.notes || data.notes || "Thank you for your business!", 110), 75, totalsY + 145, 10, "#334155", {}),
+    ...(source.terms ? [styledTextOp(truncateText(source.terms, 110), 75, totalsY + 165, 9, "#64748b", {})] : []),
+  );
+
+  return buildPdf(content);
+}
+
+export async function renderInvoicePdf(invoice: any, settings: any, extras: Record<string, unknown> = {}, options: { preferActiveTemplate?: boolean; requireConnectedTemplate?: boolean } = {}) {
   const source = { ...(invoice.toJSON?.() || invoice), ...extras };
-  const effectiveSettings = settingsWithInvoiceTemplate(settings, source);
+  const effectiveSettings = settingsWithInvoiceTemplate(settings, source, options);
   const data = invoiceData({ ...source, paidStampText: effectiveSettings.paidStampText });
+  if (String(effectiveSettings.activeTemplateHtmlCode || effectiveSettings.activeTemplateCssCode || "").trim()) {
+    return renderHtmlStyleInvoicePdf(source, effectiveSettings, data);
+  }
   const mappedFields = Array.isArray(effectiveSettings.fields)
     ? effectiveSettings.fields.filter((field: any) => field?.enabled !== false && (field?.raw || String(field?.label || field?.content || "").trim()))
     : [];
@@ -554,9 +690,9 @@ export async function renderInvoicePdf(invoice: any, settings: any, extras: Reco
   return buildPdf(content);
 }
 
-export async function regenerateInvoicePdf(invoice: any, settings?: any, extras: Record<string, unknown> = {}) {
+export async function regenerateInvoicePdf(invoice: any, settings?: any, extras: Record<string, unknown> = {}, options: { preferActiveTemplate?: boolean; requireConnectedTemplate?: boolean } = {}) {
   const resolvedSettings = settings || await getInvoiceSettings();
-  const pdf = await renderInvoicePdf(invoice, resolvedSettings, extras);
+  const pdf = await renderInvoicePdf(invoice, resolvedSettings, extras, options);
   invoice.pdfPath = await saveInvoicePdf(pdf, invoice.invoiceNumber);
   return pdf;
 }
@@ -574,7 +710,7 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
   ]);
 
   const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${String(Date.now()).slice(-6)}`;
-  const template = activeTemplate(settings);
+  const template = assertConnectedTemplate(settings);
   const subtotal = Number(subscription.baseAmount || subscription.amount || 0);
   const discountTotal = Number(subscription.discountAmount || 0);
   const taxPercent = Number(subscription.taxPercent ?? settings.defaultTaxPercent ?? 0);
@@ -649,7 +785,7 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
   logger.info({ invoiceNumber, subscriptionId, amount: grandTotal, taxTotal, discountTotal }, "Invoice generated");
 
   const data = invoiceData({ ...invoice.toJSON(), userMobile: user?.mobile || "", planName: plan?.name, paidStampText: settings.paidStampText });
-  const pdf = await regenerateInvoicePdf(invoice, settings, { userMobile: user?.mobile || "", planName: plan?.name });
+  const pdf = await regenerateInvoicePdf(invoice, settings, { userMobile: user?.mobile || "", planName: plan?.name }, { requireConnectedTemplate: true });
   await invoice.save();
 
   if (settings.enabled && settings.emailEnabled && invoice.userEmail) {

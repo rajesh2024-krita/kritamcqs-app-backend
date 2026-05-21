@@ -347,7 +347,7 @@ router.get("/invoices/:id/pdf", requireAuth, async (req: AuthenticatedRequest, r
     res.status(404).json({ error: "not_found", message: "Invoice not found" });
     return;
   }
-  const pdf = await regenerateInvoicePdf(invoice);
+  const pdf = await regenerateInvoicePdf(invoice, undefined, {}, { requireConnectedTemplate: true });
   await invoice.save();
   res.setHeader("Content-Type", "application/pdf");
   res.setHeader("Content-Disposition", `inline; filename="${invoice.invoiceNumber}.pdf"`);
