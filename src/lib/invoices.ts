@@ -1,5 +1,10 @@
 import fs from "node:fs/promises";
+import { accessSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   Invoice,
   InvoiceSettings,
@@ -11,6 +16,8 @@ import {
 } from "@api/db";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "./email-templates";
 import { logger } from "./logger";
+
+const execFileAsync = promisify(execFile);
 
 const defaultFields = [
   { id: "invoiceNumber", label: "Invoice # {{invoiceNumber}}", x: 48, y: 118, size: 10, enabled: true },
@@ -63,6 +70,14 @@ function esc(value: unknown) {
 
 function replaceTokens(template: string, data: Record<string, unknown>) {
   return String(template || "").replace(/\{\{(\w+)\}\}/g, (_match, key) => String(data[key] ?? ""));
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function textOp(text: string, x: number, y: number, size = 10) {
@@ -207,6 +222,12 @@ function imageOp(name: string, x: number, y: number, width: number, height: numb
   return `q ${width} 0 0 ${height} ${x} ${842 - y - height} cm /${name} Do Q`;
 }
 
+function localUploadUrl(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw.startsWith("/uploads/")) return raw;
+  return pathToFileURL(path.resolve(process.cwd(), raw.replace(/^\/+/, ""))).href;
+}
+
 function invoiceTemplates(settings: any) {
   return Array.isArray(settings?.reusableBlocks)
     ? settings.reusableBlocks.filter((item: any) => item?.type === "fabric-template")
@@ -226,6 +247,67 @@ function assertConnectedTemplate(settings: any) {
     throw Object.assign(new Error("No invoice template is connected to email. Connect an Invoice Editor template before sending invoice emails."), { statusCode: 400 });
   }
   return template;
+}
+
+function chromeExecutable() {
+  const candidates = [
+    process.env["CHROME_PATH"],
+    process.env["CHROME_BIN"],
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+    "/usr/bin/google-chrome",
+    "/usr/bin/google-chrome-stable",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+  ].filter(Boolean) as string[];
+  return candidates.find((candidate) => {
+    try {
+      accessSync(candidate);
+      return true;
+    } catch {
+      return false;
+    }
+  }) || "";
+}
+
+async function printHtmlToPdf(html: string, invoiceNumber: string) {
+  const executable = chromeExecutable();
+  if (!executable) {
+    throw Object.assign(new Error("Chrome/Edge is required on the backend to render Invoice Editor HTML/CSS PDFs. Set CHROME_PATH or install Chrome."), { statusCode: 500 });
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "invoice-render-"));
+  const htmlPath = path.join(tempDir, "invoice.html");
+  const pdfPath = path.join(tempDir, `${invoiceNumber.replace(/[^a-z0-9_-]/gi, "-") || "invoice"}.pdf`);
+  try {
+    await fs.writeFile(htmlPath, html, "utf8");
+    await execFileAsync(executable, [
+      "--headless=new",
+      "--disable-gpu",
+      "--disable-dev-shm-usage",
+      "--no-sandbox",
+      "--allow-file-access-from-files",
+      "--run-all-compositor-stages-before-draw",
+      "--virtual-time-budget=1000",
+      `--print-to-pdf=${pdfPath}`,
+      "--print-to-pdf-no-header",
+      pathToFileURL(htmlPath).href,
+    ], { timeout: 30000, windowsHide: true });
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      try {
+        const stat = await fs.stat(pdfPath);
+        if (stat.size > 0) break;
+      } catch {
+        // Chrome can flush the PDF shortly after the process returns on Windows.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    return await fs.readFile(pdfPath);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
 }
 
 function settingsWithInvoiceTemplate(settings: any, invoice: any = {}, options: { preferActiveTemplate?: boolean; requireConnectedTemplate?: boolean } = {}) {
@@ -598,12 +680,103 @@ function renderHtmlStyleInvoicePdf(source: any, effectiveSettings: any, data: Re
   return buildPdf(content);
 }
 
+function invoiceEditorData(source: any, effectiveSettings: any, data: Record<string, any>) {
+  const currency = source.currency || "INR";
+  const itemRows = (Array.isArray(source.items) ? source.items : []).map((item: any) => {
+    const quantity = Number(item.quantity || 0);
+    const price = Number(item.price || 0);
+    const discount = Number(item.discount || 0);
+    const taxable = Math.max(0, quantity * price - discount);
+    const total = Number(item.total ?? taxable + (taxable * Number(item.tax || 0)) / 100);
+    return {
+      item_name: item.product || item.description || "Item",
+      item_description: item.description || "",
+      item_quantity: quantity || 0,
+      item_price: `${currency} ${price.toFixed(2)}`,
+      item_tax: `${Number(item.tax || 0)}%`,
+      item_discount: `${currency} ${discount.toFixed(2)}`,
+      item_total: `${currency} ${total.toFixed(2)}`,
+    };
+  });
+  const itemsHtml = itemRows.map((item: any) =>
+    `<tr><td>${escapeHtml(item.item_name)}</td><td>${escapeHtml(item.item_quantity)}</td><td>${escapeHtml(item.item_price)}</td><td>${escapeHtml(item.item_total)}</td></tr>`
+  ).join("");
+
+  return {
+    ...data,
+    invoice_number: data.invoice_number || source.invoiceNumber || "INV-DRAFT",
+    customer_name: source.customerCompany?.name || source.userName || data.customer_name || "",
+    customer_email: source.customerCompany?.email || source.userEmail || data.customer_email || "",
+    customer_phone: source.customerCompany?.phone || source.userMobile || data.customer_phone || "",
+    customer_address: source.customerCompany?.address || data.customer_address || "",
+    invoice_date: data.invoice_date || data.invoiceDate || "",
+    due_date: data.due_date || data.dueDate || "",
+    company_name: source.billingCompany?.name || effectiveSettings.companyName || data.company_name || "Krita NEET JEE",
+    company_address: source.billingCompany?.address || effectiveSettings.companyAddress || data.company_address || "",
+    company_email: source.billingCompany?.email || effectiveSettings.companyEmail || data.company_email || "",
+    company_phone: source.billingCompany?.phone || effectiveSettings.companyPhone || data.company_phone || "",
+    company_logo: localUploadUrl(source.logoUrl || effectiveSettings.logoUrl || ""),
+    items: itemsHtml,
+    items_table: itemsHtml,
+    subtotal: data.subtotal || data.baseAmount || `${currency} 0.00`,
+    tax_rate: data.tax_rate || `${Number(source.taxDetails?.taxPercent ?? source.items?.[0]?.tax ?? 0)}%`,
+    tax_amount: data.tax_amount || data.taxAmount || `${currency} 0.00`,
+    discount: data.discount || data.discountAmount || `${currency} 0.00`,
+    total_amount: data.total_amount || data.totalAmount || `${currency} 0.00`,
+    currency,
+    payment_terms: source.terms || data.payment_terms || "Net 15 Days",
+    notes: source.notes || data.notes || "Thank you for your business!",
+    itemRows,
+  };
+}
+
+function renderInvoiceEditorDocument(htmlCode: string, cssCode: string, source: any, effectiveSettings: any, data: Record<string, any>) {
+  const previewData = invoiceEditorData(source, effectiveSettings, data);
+  let processedHtml = String(htmlCode || "");
+  let processedCss = String(cssCode || "");
+
+  processedHtml = processedHtml.replace(/\{\{#items\}\}([\s\S]*?)\{\{\/items\}\}/g, (_match, inner) =>
+    previewData.itemRows.map((item: any) => inner.replace(/\{\{\s*([\w_]+)\s*\}\}/g, (__match: string, key: string) => escapeHtml(item[key] ?? ""))).join("")
+  );
+  processedHtml = processedHtml.replace(/\{\{\s*([\w_]+)\s*\}\}/g, (_match, key) => {
+    const value = key === "items_table" ? previewData.items_table : previewData[key];
+    return value ?? "";
+  });
+  processedCss = processedCss.replace(/\{\{\s*([\w_]+)\s*\}\}/g, (_match, key) => String(previewData[key] ?? ""));
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    @page { size: A4; margin: 0; }
+    body { font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif; -webkit-font-smoothing: antialiased; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+    ${processedCss}
+  </style>
+</head>
+<body>${processedHtml}</body>
+</html>`;
+}
+
+async function renderInvoiceEditorPdf(source: any, effectiveSettings: any, data: Record<string, any>) {
+  const html = renderInvoiceEditorDocument(
+    effectiveSettings.activeTemplateHtmlCode,
+    effectiveSettings.activeTemplateCssCode,
+    source,
+    effectiveSettings,
+    data,
+  );
+  return printHtmlToPdf(html, source.invoiceNumber || "invoice");
+}
+
 export async function renderInvoicePdf(invoice: any, settings: any, extras: Record<string, unknown> = {}, options: { preferActiveTemplate?: boolean; requireConnectedTemplate?: boolean } = {}) {
   const source = { ...(invoice.toJSON?.() || invoice), ...extras };
   const effectiveSettings = settingsWithInvoiceTemplate(settings, source, options);
   const data = invoiceData({ ...source, paidStampText: effectiveSettings.paidStampText });
   if (String(effectiveSettings.activeTemplateHtmlCode || effectiveSettings.activeTemplateCssCode || "").trim()) {
-    return renderHtmlStyleInvoicePdf(source, effectiveSettings, data);
+    return renderInvoiceEditorPdf(source, effectiveSettings, data);
   }
   const mappedFields = Array.isArray(effectiveSettings.fields)
     ? effectiveSettings.fields.filter((field: any) => field?.enabled !== false && (field?.raw || String(field?.label || field?.content || "").trim()))
