@@ -12,10 +12,10 @@ import {
   Subscription,
   SubscriptionPlan,
   User,
-  UserNotification,
 } from "@api/db";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "./email-templates";
 import { logger } from "./logger";
+import { upsertUserNotificationOnInsert } from "../services/notificationService";
 
 const execFileAsync = promisify(execFile);
 
@@ -1101,7 +1101,7 @@ export async function processExpiryReminders() {
         expiryDate: subscription.endDate ? new Date(subscription.endDate).toLocaleDateString("en-IN") : "",
       };
       const dedupeKey = `subscription-expiry:${subscription.id}:${reminder.daysBefore}`;
-      const notification = await UserNotification.findOneAndUpdate(
+      const { created: notificationCreated, notification } = await upsertUserNotificationOnInsert(
         { dedupeKey },
         {
           userId: subscription.userId,
@@ -1110,10 +1110,16 @@ export async function processExpiryReminders() {
           body: replaceTokens(reminder.body, data),
           dedupeKey,
           visibleInApp: settings.inAppEnabled !== false,
+          linkUrl: "/subscription",
+          deliveryMode: settings.inAppEnabled !== false ? "notification" : "email",
+          notificationStatus: settings.inAppEnabled !== false ? "created" : "not_requested",
+          pushStatus: settings.inAppEnabled !== false ? "pending" : "not_requested",
+          senderName: "System",
+          sentAt: new Date(),
         },
-        { upsert: true, new: true, setDefaultsOnInsert: true },
       );
-      if (notification.createdAt?.getTime() === notification.updatedAt?.getTime()) created += 1;
+      if (!notification) continue;
+      if (notificationCreated) created += 1;
 
       const invoiceSettings = await getInvoiceSettings();
       if (settings.emailEnabled && user.email && !notification.emailStatus) {

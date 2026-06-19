@@ -23,7 +23,7 @@ import { z } from "zod";
 import mongoose from "mongoose";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
 import { getLatestActivitySummary, getOrCreateDailyAssignment, getQuestionsAttemptedToday } from "../lib/learning";
-import { registerToken } from "../services/notificationService";
+import { registerToken, upsertUserNotificationOnInsert } from "../services/notificationService";
 
 const router: IRouter = Router();
 const UpdatePreferencesBody = z.object({
@@ -428,26 +428,25 @@ async function ensureAppReminderNotificationsForUser(user: any, userId: string, 
     const dueSchedules = (reminder.schedules || []).filter((schedule: any) => schedule?.enabled !== false && scheduleDueToday(schedule?.time));
     for (const [index, schedule] of dueSchedules.entries()) {
       const scheduleKey = String(schedule?.time || index).replace(/[^0-9a-z]/gi, "") || String(index);
-      await UserNotification.updateOne(
-        { dedupeKey: `app-reminder:${key}:${dateKey}:${scheduleKey}:${userId}` },
+      const dedupeKey = `app-reminder:${key}:${dateKey}:${scheduleKey}:${userId}`;
+      await upsertUserNotificationOnInsert(
+        { dedupeKey },
         {
-          $setOnInsert: {
-            userId,
-            type: fallback.type,
-            title: reminder.title || fallback.title,
-            body: reminder.message || fallback.message,
-            dedupeKey: `app-reminder:${key}:${dateKey}:${scheduleKey}:${userId}`,
-            visibleInApp: true,
-            linkUrl: appNotificationLink(reminder.ctaAction, reminder.ctaLink) || fallback.link,
-            imageUrl: reminder.image || "",
-            targetGroup: reminder.audience || "all",
-            deliveryMode: deliveryMode === "both" ? "notification_email" : "notification",
-            notificationStatus: "created",
-            senderName: "System",
-            sentAt: new Date(),
-          },
+          userId,
+          type: fallback.type,
+          title: reminder.title || fallback.title,
+          body: reminder.message || fallback.message,
+          dedupeKey,
+          visibleInApp: true,
+          linkUrl: appNotificationLink(reminder.ctaAction, reminder.ctaLink) || fallback.link,
+          imageUrl: reminder.image || "",
+          targetGroup: reminder.audience || "all",
+          deliveryMode: deliveryMode === "both" ? "notification_email" : "notification",
+          notificationStatus: "created",
+          pushStatus: "pending",
+          senderName: "System",
+          sentAt: new Date(),
         },
-        { upsert: true },
       );
     }
   };

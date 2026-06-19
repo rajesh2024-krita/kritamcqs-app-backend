@@ -1,4 +1,4 @@
-import { PushDeviceToken, User } from "@api/db";
+import { PushDeviceToken, User, UserNotification } from "@api/db";
 import { getMessaging } from "../lib/firebase";
 import { logger } from "../lib/logger";
 
@@ -157,4 +157,97 @@ export async function sendToUsers(userIds: string[], payload: NotificationPayloa
 export async function broadcast(payload: NotificationPayload) {
   const users = await User.find({ isActive: { $ne: false }, isBlocked: { $ne: true } }).select("_id").lean();
   return sendToUsers(users.map((user: any) => String(user._id)), payload);
+}
+
+function payloadFromNotification(notification: any): NotificationPayload {
+  return {
+    title: String(notification.title || ""),
+    body: String(notification.body || ""),
+    data: {
+      notificationId: String(notification._id || notification.id || ""),
+      notificationType: String(notification.type || ""),
+      deepLink: String(notification.linkUrl || "/notifications"),
+      linkUrl: String(notification.linkUrl || "/notifications"),
+      imageUrl: String(notification.imageUrl || ""),
+    },
+  };
+}
+
+export async function sendPushForUserNotifications(notifications: any[]) {
+  const visibleNotifications = notifications.filter((item) => item && item.visibleInApp !== false);
+  const result = {
+    sentCount: 0,
+    successCount: 0,
+    failedCount: 0,
+    noTokenCount: 0,
+    skippedCount: notifications.length - visibleNotifications.length,
+  };
+
+  for (const notification of visibleNotifications) {
+    try {
+      const delivery = await sendToUser(String(notification.userId), payloadFromNotification(notification));
+      const attempted = delivery.successCount + delivery.failureCount;
+      result.sentCount += attempted;
+      result.successCount += delivery.successCount;
+      result.failedCount += delivery.failureCount;
+      if (!attempted) result.noTokenCount += 1;
+
+      const pushStatus = delivery.successCount > 0 ? "sent" : attempted ? "failed" : "no_token";
+      await UserNotification.updateOne(
+        { _id: notification._id },
+        {
+          $set: {
+            pushStatus,
+            pushError: pushStatus === "failed" ? "Push delivery failed" : "",
+            sentAt: notification.sentAt || new Date(),
+          },
+        },
+      );
+    } catch (error) {
+      result.failedCount += 1;
+      await UserNotification.updateOne(
+        { _id: notification._id },
+        {
+          $set: {
+            pushStatus: "failed",
+            pushError: error instanceof Error ? error.message : "Push delivery failed",
+            sentAt: notification.sentAt || new Date(),
+          },
+        },
+      );
+    }
+  }
+
+  return result;
+}
+
+export async function createUserNotification(doc: Record<string, any>, options: { autoPush?: boolean } = {}) {
+  const notification = await UserNotification.create(doc);
+  if (options.autoPush !== false) {
+    await sendPushForUserNotifications([notification]);
+  }
+  return notification;
+}
+
+export async function insertUserNotifications(docs: Record<string, any>[], options: { autoPush?: boolean; insertOptions?: Record<string, any> } = {}) {
+  const notifications = docs.length ? await UserNotification.insertMany(docs, { ordered: false, ...(options.insertOptions || {}) }) : [];
+  const pushDelivery = options.autoPush === false ? null : await sendPushForUserNotifications(notifications);
+  return { notifications, pushDelivery };
+}
+
+export async function upsertUserNotificationOnInsert(
+  filter: Record<string, any>,
+  insertDoc: Record<string, any>,
+  options: { autoPush?: boolean; updateOptions?: Record<string, any> } = {},
+) {
+  const result = await UserNotification.updateOne(
+    filter,
+    { $setOnInsert: insertDoc },
+    { upsert: true, ...(options.updateOptions || {}) },
+  );
+  if (!result.upsertedCount) return { created: false, notification: null, result, pushDelivery: null };
+
+  const notification = await UserNotification.findOne(filter);
+  const pushDelivery = options.autoPush === false || !notification ? null : await sendPushForUserNotifications([notification]);
+  return { created: true, notification, result, pushDelivery };
 }

@@ -4,10 +4,11 @@ import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { z } from "zod";
-import { HelpDeskSettings, InvoiceSettings, SupportTicket, User, UserNotification } from "@api/db";
+import { HelpDeskSettings, InvoiceSettings, SupportTicket, User } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
+import { insertUserNotifications } from "../services/notificationService";
 
 const router: IRouter = Router();
 const uploadDir = path.resolve(process.cwd(), "uploads", "support");
@@ -65,7 +66,7 @@ async function notifyAdmins(ticket: any, file?: Express.Multer.File) {
   const shouldSendEmail = helpSettings.mode === "email" || helpSettings.mode === "both";
   const admins = await User.find({ isAdmin: true }).select("_id email").limit(50);
   if (shouldSaveDatabase && admins.length) {
-    await UserNotification.insertMany(
+    await insertUserNotifications(
       admins.map((admin: any) => ({
         userId: String(admin._id),
         type: "support",
@@ -73,8 +74,13 @@ async function notifyAdmins(ticket: any, file?: Express.Multer.File) {
         body: `${ticket.ticketId} - ${ticket.category}`,
         dedupeKey: `support-admin-${ticket.ticketId}-${String(admin._id)}`,
         linkUrl: "/admin/support",
+        visibleInApp: true,
+        notificationStatus: "created",
+        pushStatus: "pending",
+        senderName: "System",
+        sentAt: new Date(),
       })),
-      { ordered: false },
+      { autoPush: true },
     ).catch(() => undefined);
   }
 

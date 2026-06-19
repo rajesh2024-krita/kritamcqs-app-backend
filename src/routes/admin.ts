@@ -43,6 +43,7 @@ import { resolveDifficultySelection } from "../lib/difficulties";
 import { getExamTypeLabel, normalizeQuestionDocument } from "../lib/question-framework";
 import { generateInvoiceForSubscription, getActiveInvoiceTemplate, getConnectedInvoiceTemplate, getInvoiceSettings, getNotificationSettings, processExpiryReminders, regenerateInvoicePdf, renderInvoicePdf, requireConnectedInvoiceTemplate } from "../lib/invoices";
 import { COMMON_EMAIL_VARIABLES, EMAIL_TEMPLATE_DEFINITIONS, EMAIL_TEMPLATE_KEYS, buildTemplateFromDefinition, buildTemplatePreview, extractTemplateVariables, resolveTemplate, sampleEmailVariables, sendTemplatedEmail, templateVariablesFor, validateTemplateVariables } from "../lib/email-templates";
+import { createUserNotification, insertUserNotifications } from "../services/notificationService";
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -2873,13 +2874,13 @@ router.post(["/notifications/send", "/notifications/broadcast"], upload.single("
     targetGroup: String(body.targetGroup || ""),
     deliveryMode,
     notificationStatus: flags.inApp ? "created" : "skipped",
-    pushStatus: flags.push ? "unsupported" : "",
-    pushError: flags.push ? "Push provider is not configured" : "",
+    pushStatus: flags.inApp ? "pending" : "not_requested",
+    pushError: "",
     emailTemplateKey: flags.email ? String(body.templateKey || notificationTemplateKey(type)) : "",
     senderId: String((req as any).admin?._id || ""),
     senderName: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
   }));
-  const notifications = docs.length ? await UserNotification.insertMany(docs, { ordered: false }) : [];
+  const { notifications, pushDelivery } = await insertUserNotifications(docs, { autoPush: true });
   let emailSent = 0;
   let emailSkipped = 0;
   const attachments = savedAttachment.emailAttachments;
@@ -2952,7 +2953,15 @@ router.post(["/notifications/send", "/notifications/broadcast"], upload.single("
   } else if (notifications.length) {
     await UserNotification.updateMany({ _id: { $in: notifications.map((item: any) => item._id) } }, { $set: { emailStatus: "skipped", emailError: "Email delivery not selected" } });
   }
-  sendSuccess(res, { totalRecipients: users.length, notificationsCreated: notifications.length, emailSent, emailSkipped, pushUnsupported: flags.push ? users.length : 0 }, { status: 201, message: "Notification processed" });
+  sendSuccess(res, {
+    totalRecipients: users.length,
+    notificationsCreated: notifications.length,
+    emailSent,
+    emailSkipped,
+    pushSent: pushDelivery?.successCount || 0,
+    pushFailed: pushDelivery?.failedCount || 0,
+    pushNoToken: pushDelivery?.noTokenCount || 0,
+  }, { status: 201, message: "Notification processed" });
 }));
 
 router.get("/helpdesk-settings", wrap(async (_req, res) => {
@@ -3045,7 +3054,7 @@ router.post("/support-tickets/:id/reply", upload.single("attachment"), wrap(asyn
     ? EMAIL_TEMPLATE_KEYS.HELPDESK_TICKET_CLOSED
     : helpSettings.ticketStatusTemplateKey || EMAIL_TEMPLATE_KEYS.HELPDESK_TICKET_REPLY;
   const emailResult = await sendSupportStatusEmail(ticket, templateKey, message, saved.emailAttachments).catch((error) => ({ skipped: true, reason: error instanceof Error ? error.message : "Email failed" }));
-  await UserNotification.create({
+  await createUserNotification({
     userId: ticket.userId,
     type: "support",
     title: ticket.status === "closed" ? "Support ticket closed" : "Support reply received",
@@ -3057,6 +3066,7 @@ router.post("/support-tickets/:id/reply", upload.single("attachment"), wrap(asyn
     attachmentName: saved.attachmentName,
     emailStatus: (emailResult as any).skipped ? "skipped" : "sent",
     emailError: (emailResult as any).reason || "",
+    pushStatus: "pending",
     sentAt: (emailResult as any).skipped ? undefined : new Date(),
   });
   sendSuccess(res, { ticket: ticket.toJSON(), email: emailResult }, { message: ticket.status === "closed" ? "Ticket closed" : "Reply sent" });
