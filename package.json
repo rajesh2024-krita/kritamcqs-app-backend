@@ -1,0 +1,43 @@
+{
+  "name": "api-server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ./build.mjs && node --enable-source-maps ./dist/index.mjs",
+    "build": "node ./build.mjs",
+    "start": "node --enable-source-maps ./dist/index.mjs",
+    "db:diagnose-pyq": "node ./scripts/diagnose-pyq-data.mjs",
+    "db:normalize-pyq": "node ./scripts/normalize-pyq-data.mjs",
+    "db:repair-year-ids": "node ./scripts/repair-question-year-ids.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2",
+    "dotenv": "^17.3.1",
+    "express": "^5",
+    "express-rate-limit": "^8.5.2",
+    "firebase-admin": "^14.0.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^8.15.0",
+    "multer": "^1.4.5-lts.2",
+    "pino": "^9",
+    "pino-http": "^10",
+    "xlsx": "^0.18.5",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/jsonwebtoken": "^9.0.10",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^25.3.3",
+    "esbuild": "0.25.8",
+    "esbuild-plugin-pino": "^2.3.3",
+    "pino-pretty": "^13",
+    "thread-stream": "3.1.0"
+  }
+}

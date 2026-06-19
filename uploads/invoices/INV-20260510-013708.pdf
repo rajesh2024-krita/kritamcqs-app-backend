@@ -1,0 +1,42 @@
+%PDF-1.4
+1 0 obj
+<< /Length 450 >>
+stream
+1 g 0 0 595 842 re f 0 g
+BT /F1 48 Tf 347 737 Td (INVOICE) Tj ET
+BT /F1 12 Tf 65 559 Td (Bill To) Tj ET
+BT /F1 12 Tf 65 543 Td (Rajesh) Tj ET
+BT /F1 12 Tf 65 527 Td (rajesh.kritatechnosolutions@gmail.com) Tj ET
+BT /F1 12 Tf 65 511 Td (8000000001) Tj ET
+BT /F1 12 Tf 65 495 Td (test address) Tj ET
+BT /F1 7 Tf 523 722 Td (rect) Tj ET
+BT /F1 12 Tf 552 836 Td (PAID) Tj ET
+BT /F1 7 Tf 66 374 Td (group) Tj ET
+BT /F1 12 Tf 248 47 Td (Add body text) Tj ET
+endstream
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 4 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 2 0 R >> >> /Contents 1 0 R >>
+endobj
+4 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+5 0 obj
+<< /Type /Catalog /Pages 4 0 R >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000510 00000 n 
+0000000580 00000 n 
+0000000706 00000 n 
+0000000763 00000 n 
+trailer
+<< /Size 6 /Root 5 0 R >>
+startxref
+812
+%%EOF
