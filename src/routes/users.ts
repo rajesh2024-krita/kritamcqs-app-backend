@@ -24,6 +24,7 @@ import mongoose from "mongoose";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
 import { getLatestActivitySummary, getOrCreateDailyAssignment, getQuestionsAttemptedToday } from "../lib/learning";
 import { registerToken, upsertUserNotificationOnInsert } from "../services/notificationService";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 const UpdatePreferencesBody = z.object({
@@ -301,6 +302,15 @@ async function buildNotifications(
     UserNotification.countDocuments(storedFilter),
     UserNotification.countDocuments({ ...storedFilter, readAt: { $exists: false } }),
   ]);
+
+  logger.info({
+    userId,
+    fetched: storedNotifications.length,
+    storedTotal,
+    storedUnread,
+    page,
+    limit,
+  }, "[NOTIFICATION FETCHED]");
 
   return {
     items: [

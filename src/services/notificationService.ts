@@ -184,8 +184,20 @@ export async function sendPushForUserNotifications(notifications: any[]) {
   };
 
   for (const notification of visibleNotifications) {
+    logger.info({
+      notificationId: String(notification._id || notification.id || ""),
+      userId: String(notification.userId || ""),
+      type: notification.type,
+      title: notification.title,
+    }, "[NOTIFICATION SAVED]");
     try {
-      const delivery = await sendToUser(String(notification.userId), payloadFromNotification(notification));
+      const tokens = await activeTokensForUsers([String(notification.userId)]);
+      logger.info({
+        notificationId: String(notification._id || notification.id || ""),
+        userId: String(notification.userId || ""),
+        tokenCount: tokens.length,
+      }, "[FCM TOKEN FOUND]");
+      const delivery = await sendToTokens(tokens, payloadFromNotification(notification));
       const attempted = delivery.successCount + delivery.failureCount;
       result.sentCount += attempted;
       result.successCount += delivery.successCount;
@@ -193,6 +205,13 @@ export async function sendPushForUserNotifications(notifications: any[]) {
       if (!attempted) result.noTokenCount += 1;
 
       const pushStatus = delivery.successCount > 0 ? "sent" : attempted ? "failed" : "no_token";
+      logger.info({
+        notificationId: String(notification._id || notification.id || ""),
+        userId: String(notification.userId || ""),
+        successCount: delivery.successCount,
+        failedCount: delivery.failureCount,
+        pushStatus,
+      }, pushStatus === "sent" ? "[FCM SENT SUCCESS]" : "[FCM SENT FAILED]");
       await UserNotification.updateOne(
         { _id: notification._id },
         {
@@ -205,6 +224,11 @@ export async function sendPushForUserNotifications(notifications: any[]) {
       );
     } catch (error) {
       result.failedCount += 1;
+      logger.error({
+        notificationId: String(notification._id || notification.id || ""),
+        userId: String(notification.userId || ""),
+        err: error,
+      }, "[FCM SENT FAILED]");
       await UserNotification.updateOne(
         { _id: notification._id },
         {
@@ -222,6 +246,7 @@ export async function sendPushForUserNotifications(notifications: any[]) {
 }
 
 export async function createUserNotification(doc: Record<string, any>, options: { autoPush?: boolean } = {}) {
+  logger.info({ userId: doc["userId"], type: doc["type"], title: doc["title"] }, "[NOTIFICATION CREATED]");
   const notification = await UserNotification.create(doc);
   if (options.autoPush !== false) {
     await sendPushForUserNotifications([notification]);
@@ -230,6 +255,7 @@ export async function createUserNotification(doc: Record<string, any>, options: 
 }
 
 export async function insertUserNotifications(docs: Record<string, any>[], options: { autoPush?: boolean; insertOptions?: Record<string, any> } = {}) {
+  logger.info({ count: docs.length, type: docs[0]?.["type"] || "" }, "[NOTIFICATION CREATED]");
   const notifications = docs.length ? await UserNotification.insertMany(docs, { ordered: false, ...(options.insertOptions || {}) }) : [];
   const pushDelivery = options.autoPush === false ? null : await sendPushForUserNotifications(notifications);
   return { notifications, pushDelivery };
@@ -240,6 +266,7 @@ export async function upsertUserNotificationOnInsert(
   insertDoc: Record<string, any>,
   options: { autoPush?: boolean; updateOptions?: Record<string, any> } = {},
 ) {
+  logger.info({ userId: insertDoc["userId"], type: insertDoc["type"], title: insertDoc["title"] }, "[NOTIFICATION CREATED]");
   const result = await UserNotification.updateOne(
     filter,
     { $setOnInsert: insertDoc },
@@ -250,4 +277,42 @@ export async function upsertUserNotificationOnInsert(
   const notification = await UserNotification.findOne(filter);
   const pushDelivery = options.autoPush === false || !notification ? null : await sendPushForUserNotifications([notification]);
   return { created: true, notification, result, pushDelivery };
+}
+
+export async function createAndSend(input: {
+  title: string;
+  body?: string;
+  message?: string;
+  userIds: string[];
+  type?: string;
+  image?: string;
+  imageUrl?: string;
+  linkUrl?: string;
+  deepLink?: string;
+  targetGroup?: string;
+  deliveryMode?: string;
+  senderId?: string;
+  senderName?: string;
+  metadata?: Record<string, unknown>;
+}) {
+  const uniqueUserIds = [...new Set((input.userIds || []).map((id) => String(id || "")).filter(Boolean))];
+  const now = Date.now();
+  const docs = uniqueUserIds.map((userId) => ({
+    userId,
+    type: input.type || "custom",
+    title: input.title,
+    body: input.body || input.message || "",
+    dedupeKey: `notification:${now}:${userId}`,
+    visibleInApp: true,
+    linkUrl: input.linkUrl || input.deepLink || "/notifications",
+    imageUrl: input.imageUrl || input.image || "",
+    targetGroup: input.targetGroup || "",
+    deliveryMode: input.deliveryMode || "notification",
+    notificationStatus: "created",
+    pushStatus: "pending",
+    senderId: input.senderId || "",
+    senderName: input.senderName || "System",
+    sentAt: new Date(),
+  }));
+  return insertUserNotifications(docs, { autoPush: true });
 }

@@ -3,11 +3,11 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { requireAdmin, requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import {
-  broadcast,
+  createAndSend,
   registerToken,
   removeToken,
-  sendToUser,
 } from "../services/notificationService";
+import { User } from "@api/db";
 
 const router: IRouter = Router();
 
@@ -72,10 +72,15 @@ router.delete("/remove-token", requireAuth, async (req: AuthenticatedRequest, re
 router.post("/send", requireAdmin, async (req: AuthenticatedRequest, res) => {
   try {
     const body = SendBody.parse(req.body || {});
-    const result = await sendToUser(body.userId, {
+    const result = await createAndSend({
+      userIds: [body.userId],
       title: body.title,
       body: body.body,
-      data: body.data,
+      type: String(body.data?.["type"] || "custom"),
+      linkUrl: String(body.data?.["deepLink"] || body.data?.["linkUrl"] || "/notifications"),
+      metadata: body.data,
+      senderId: String((req as any).admin?._id || ""),
+      senderName: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
     });
     res.json({ success: true, ...result });
   } catch (error) {
@@ -87,10 +92,16 @@ router.post("/send", requireAdmin, async (req: AuthenticatedRequest, res) => {
 router.post("/broadcast", requireAdmin, async (req: AuthenticatedRequest, res) => {
   try {
     const body = PayloadBody.parse(req.body || {});
-    const result = await broadcast({
+    const users = await User.find({ isActive: { $ne: false }, isBlocked: { $ne: true } }).select("_id").lean();
+    const result = await createAndSend({
+      userIds: users.map((user: any) => String(user._id)),
       title: body.title,
       body: body.body,
-      data: body.data,
+      type: String(body.data?.["type"] || "custom"),
+      linkUrl: String(body.data?.["deepLink"] || body.data?.["linkUrl"] || "/notifications"),
+      metadata: body.data,
+      senderId: String((req as any).admin?._id || ""),
+      senderName: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
     });
     res.json({ success: true, ...result });
   } catch (error) {
