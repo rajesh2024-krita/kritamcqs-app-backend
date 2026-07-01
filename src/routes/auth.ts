@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { AuthOtp, AuthSettings, InvoiceSettings, User } from "@api/db";
 import jwt from "jsonwebtoken";
+import { createPublicKey } from "crypto";
 import { generateOtp, generateResetToken, hashOtp, hashPassword, hashResetToken, verifyPassword } from "../lib/password";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 
@@ -10,6 +11,7 @@ const JWT_SECRET = process.env["SESSION_SECRET"] ?? "krita-secret-key";
 
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
 const googleCertCache: { certs: Record<string, string>; expiresAt: number } = { certs: {}, expiresAt: 0 };
+const appleKeyCache: { keys: Array<Record<string, string>>; expiresAt: number } = { keys: [], expiresAt: 0 };
 
 function checkRateLimit(key: string, maxAttempts = 8, windowMs = 15 * 60 * 1000) {
   const now = Date.now();
@@ -35,8 +37,12 @@ function userResponse(user: any) {
     level: u.level,
     onboardingComplete: u.onboardingComplete,
     mobileVerified: u.mobileVerified,
-    emailVerified: Boolean(u.emailVerified || u.authTypes?.includes("email") || u.authTypes?.includes("google")),
+    emailVerified: Boolean(u.emailVerified || u.authTypes?.includes("email") || u.authTypes?.includes("google") || u.authTypes?.includes("apple")),
     authTypes: u.authTypes ?? [],
+    loginProvider: u.loginProvider ?? (u.isAppleLogin ? "APPLE" : u.googleId ? "GOOGLE" : "EMAIL"),
+    appleUserId: u.appleUserId,
+    appleEmail: u.appleEmail,
+    isAppleLogin: Boolean(u.isAppleLogin),
     requiresProfileCompletion: Boolean(u.requiresProfileCompletion),
     country: u.country,
     state: u.state,
@@ -66,6 +72,17 @@ function getGoogleClientIds(settings: any) {
     process.env["GOOGLE_WEB_CLIENT_ID"],
     process.env["GOOGLE_ANDROID_CLIENT_ID"],
     process.env["GOOGLE_IOS_CLIENT_ID"],
+  ]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean))];
+}
+
+function getAppleAudiences(settings: any) {
+  return [...new Set([
+    settings?.appleBundleId,
+    process.env["APPLE_BUNDLE_ID"],
+    process.env["IOS_BUNDLE_ID"],
+    "app.kritamcqs.iosapp",
   ]
     .map((value) => String(value || "").trim())
     .filter(Boolean))];
@@ -124,6 +141,50 @@ async function verifyGoogleCredential(credential: string, allowedClientIds: stri
   }) as jwt.JwtPayload;
 }
 
+async function getAppleKeys() {
+  if (appleKeyCache.expiresAt > Date.now() && appleKeyCache.keys.length > 0) {
+    return appleKeyCache.keys;
+  }
+
+  const response = await fetch("https://appleid.apple.com/auth/keys");
+  const payload = (await response.json().catch(() => null)) as { keys?: Array<Record<string, string>> } | null;
+  if (!response.ok || !Array.isArray(payload?.keys)) {
+    throw new Error("Unable to fetch Apple public keys.");
+  }
+
+  const cacheControl = response.headers.get("cache-control") || "";
+  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
+  const maxAgeSeconds = maxAgeMatch ? Number(maxAgeMatch[1]) : 3600;
+  appleKeyCache.keys = payload.keys;
+  appleKeyCache.expiresAt = Date.now() + Math.max(300, maxAgeSeconds - 60) * 1000;
+  return appleKeyCache.keys;
+}
+
+async function verifyAppleIdentityToken(identityToken: string, allowedAudiences: string[]) {
+  const decoded = jwt.decode(identityToken, { complete: true });
+  const kid = typeof decoded === "object" && decoded?.header ? String(decoded.header.kid || "") : "";
+  if (!kid) throw new Error("Apple token is missing a key id.");
+
+  const keys = await getAppleKeys();
+  const key = keys.find((item) => item.kid === kid);
+  if (!key?.n || !key?.e) throw new Error("Apple token key is not recognized.");
+
+  const publicKey = createPublicKey({
+    key: {
+      kty: key.kty || "RSA",
+      n: key.n,
+      e: key.e,
+    },
+    format: "jwk",
+  } as any).export({ format: "pem", type: "spki" }) as string;
+
+  return jwt.verify(identityToken, publicKey, {
+    algorithms: ["RS256"],
+    audience: allowedAudiences,
+    issuer: "https://appleid.apple.com",
+  }) as jwt.JwtPayload;
+}
+
 async function markLogin(user: any) {
   if (user.isBlocked || user.isActive === false) {
     throw new Error("This account is not active. Contact support.");
@@ -167,6 +228,8 @@ router.get("/settings", async (_req, res) => {
     googleAndroidClientId: settings.googleEnabled ? androidClientId || (googleClientIdIsAndroidOnly ? configuredGoogleClientId : "") : "",
     googleIosClientId: settings.googleEnabled ? iosClientId : "",
     googleAndroidPackageName: settings.googleAndroidPackageName || "com.kritamcqs.androidapp",
+    appleEnabled: settings.appleEnabled !== false && getAppleAudiences(settings).length > 0,
+    appleBundleId: settings.appleBundleId || process.env["APPLE_BUNDLE_ID"] || "app.kritamcqs.iosapp",
     profileMobileRequired: Boolean(settings.profileMobileRequired),
     consent: {
       enabled: settings.consentEnabled !== false,
@@ -207,6 +270,7 @@ router.post("/register", async (req, res) => {
       email,
       name,
       passwordHash: hashPassword(password),
+      loginProvider: "EMAIL",
       authTypes: ["email"],
       onboardingComplete: false,
       mobileVerified: false,
@@ -259,6 +323,7 @@ router.post("/login", async (req, res) => {
       return;
     }
     user.authTypes = [...new Set([...(user.authTypes || []), "email"])];
+    user.loginProvider = user.loginProvider || "EMAIL";
     await markLogin(user);
     res.json({ token: signUser(user, settings), user: userResponse(user), isNewUser: false });
   } catch (error) {
@@ -308,6 +373,7 @@ router.post("/google", async (req, res) => {
         googleId: googleUser.sub,
         name: googleUser.name || "",
         profileImage: googleUser.picture || "",
+        loginProvider: "GOOGLE",
         authTypes: ["google"],
         onboardingComplete: false,
         requiresProfileCompletion: true,
@@ -321,6 +387,7 @@ router.post("/google", async (req, res) => {
       user.name = user.name || googleUser.name || "";
       user.profileImage = user.profileImage || googleUser.picture || "";
       user.authTypes = [...new Set([...(user.authTypes || []), "google"])];
+      user.loginProvider = "GOOGLE";
       user.requiresProfileCompletion = !user.name || !user.email;
     }
     await markLogin(user);
@@ -341,6 +408,99 @@ router.post("/google", async (req, res) => {
   } catch (error) {
     req.log.error({ error }, "Google login failed");
     res.status(400).json({ error: "google_login_failed", message: "Google login failed" });
+  }
+});
+
+router.post("/apple", async (req, res) => {
+  try {
+    const settings = await getAuthSettings();
+    const allowedAudiences = getAppleAudiences(settings);
+    if (settings.appleEnabled === false || allowedAudiences.length === 0) {
+      res.status(403).json({ error: "apple_disabled", message: "Apple login is currently disabled." });
+      return;
+    }
+
+    const identityToken = String(req.body?.identityToken || "").trim();
+    if (!identityToken) {
+      res.status(400).json({ error: "missing_identity_token", message: "Apple identity token is required." });
+      return;
+    }
+
+    let appleUser: jwt.JwtPayload;
+    try {
+      appleUser = await verifyAppleIdentityToken(identityToken, allowedAudiences);
+    } catch (error) {
+      req.log.warn({ error }, "Apple token verification failed");
+      res.status(401).json({ error: "invalid_apple_token", message: "Apple verification failed." });
+      return;
+    }
+
+    const appleUserId = String(appleUser.sub || "").trim();
+    if (!appleUserId) {
+      res.status(401).json({ error: "invalid_apple_token", message: "Apple account identifier is missing." });
+      return;
+    }
+
+    const tokenEmail = normalizeEmail(appleUser.email);
+    const requestEmail = normalizeEmail(req.body?.email);
+    const email = tokenEmail || requestEmail;
+    const fullName = String(req.body?.fullName || "").trim();
+    const firstName = String(req.body?.givenName || "").trim();
+    const lastName = String(req.body?.familyName || "").trim();
+    const name = fullName || [firstName, lastName].filter(Boolean).join(" ").trim();
+    const emailVerified = appleUser.email_verified === true || appleUser.email_verified === "true";
+
+    const filters: any[] = [{ appleUserId }];
+    if (email) filters.push({ email });
+    let user = await User.findOne({ $or: filters });
+    let isNewUser = false;
+
+    if (!user) {
+      user = await new User({
+        email: email || undefined,
+        appleEmail: email || undefined,
+        appleUserId,
+        name,
+        loginProvider: "APPLE",
+        isAppleLogin: true,
+        emailVerified,
+        authTypes: ["apple"],
+        onboardingComplete: false,
+        requiresProfileCompletion: !name || !email,
+        isPremium: false,
+        isAdmin: false,
+      }).save();
+      isNewUser = true;
+    } else {
+      user.appleUserId = user.appleUserId || appleUserId;
+      user.appleEmail = user.appleEmail || email || undefined;
+      user.email = user.email || email || undefined;
+      user.name = user.name || name || "";
+      user.emailVerified = Boolean(user.emailVerified || emailVerified);
+      user.authTypes = [...new Set([...(user.authTypes || []), "apple"])];
+      user.loginProvider = "APPLE";
+      user.isAppleLogin = true;
+      user.requiresProfileCompletion = !user.name || !user.email;
+    }
+
+    await markLogin(user);
+
+    if (isNewUser && user.email) {
+      const invoiceSettings = await InvoiceSettings.findOne({ key: "default" });
+      sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.AUTH_REGISTRATION, user.email, {
+        user_name: user.name || "Learner",
+        email: user.email,
+        app_name: invoiceSettings?.companyName || "Krita",
+        support_email: invoiceSettings?.companyEmail || invoiceSettings?.smtp?.fromEmail || "support@krita.com",
+      }).catch((err) => {
+        req.log.warn({ err, userId: String(user._id), email: user.email }, "Apple registration welcome email failed");
+      });
+    }
+
+    res.json({ token: signUser(user, settings), user: userResponse(user), isNewUser });
+  } catch (error) {
+    req.log.error({ error }, "Apple login failed");
+    res.status(400).json({ error: "apple_login_failed", message: "Apple login failed" });
   }
 });
 

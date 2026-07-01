@@ -4,6 +4,7 @@ export interface IAuthSettings extends Document {
   key: string;
   emailPasswordEnabled: boolean;
   googleEnabled: boolean;
+  appleEnabled: boolean;
   googleClientId?: string;
   googleAndroidClientId?: string;
   googleIosClientId?: string;
@@ -12,6 +13,7 @@ export interface IAuthSettings extends Document {
   googleClientSecret?: string;
   googleRedirectUrls: string[];
   googleCallbackUrl?: string;
+  appleBundleId?: string;
   profileMobileRequired: boolean;
   sessionTimeoutMinutes: number;
   resetOtpExpiryMinutes: number;
@@ -34,6 +36,7 @@ const AuthSettingsSchema = new Schema<IAuthSettings>(
     key: { type: String, default: "default", unique: true, index: true },
     emailPasswordEnabled: { type: Boolean, default: true },
     googleEnabled: { type: Boolean, default: false },
+    appleEnabled: { type: Boolean, default: true },
     googleClientId: { type: String, default: "" },
     googleAndroidClientId: { type: String, default: "" },
     googleIosClientId: { type: String, default: "" },
@@ -42,6 +45,7 @@ const AuthSettingsSchema = new Schema<IAuthSettings>(
     googleClientSecret: { type: String, default: "" },
     googleRedirectUrls: { type: [String], default: [] },
     googleCallbackUrl: { type: String, default: "" },
+    appleBundleId: { type: String, default: "app.kritamcqs.iosapp" },
     profileMobileRequired: { type: Boolean, default: false },
     sessionTimeoutMinutes: { type: Number, default: 43200, min: 15 },
     resetOtpExpiryMinutes: { type: Number, default: 10, min: 1, max: 60 },
