@@ -1,14 +1,22 @@
 import { Router, type IRouter } from "express";
 import {
   User,
+  AppNavigationEvent,
   AppNotificationSettings,
+  AuthOtp,
   ChapterPerformance,
   DailyAssignment,
   DailyTest,
   ExamMarkingSettings,
+  Invoice,
   LearningSession,
+  MistakeBook,
+  Otp,
+  Performance,
   QuestionAttempt,
+  RevisionHistory,
   SessionAttempt,
+  Subscription,
   Subject,
   Chapter,
   Mode,
@@ -17,6 +25,8 @@ import {
   RevisionSettings,
   UserNotification,
   PushDeviceToken,
+  SupportTicket,
+  Test,
 } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { z } from "zod";
@@ -95,6 +105,10 @@ function userResponse(user: any) {
     mobileVerified: u.mobileVerified,
     emailVerified: u.emailVerified,
     authTypes: u.authTypes ?? [],
+    loginProvider: u.loginProvider ?? (u.isAppleLogin ? "APPLE" : u.googleId ? "GOOGLE" : "EMAIL"),
+    appleUserId: u.appleUserId,
+    appleEmail: u.appleEmail,
+    isAppleLogin: Boolean(u.isAppleLogin),
     requiresProfileCompletion: u.requiresProfileCompletion,
     isPremium: u.isPremium,
     premiumExpiresAt: u.premiumExpiresAt,
@@ -657,6 +671,43 @@ router.post("/preferences", requireAuth, async (req: AuthenticatedRequest, res) 
     req.log.error({ error }, "Update preferences error");
     const message = (error as any)?.code === 11000 ? "This email is already used by another account" : "Failed to update preferences";
     res.status(400).json({ error: "preferences_failed", message });
+  }
+});
+
+router.delete("/me", requireAuth, async (req: AuthenticatedRequest, res) => {
+  const user = req.user!;
+  const userId = req.userId!;
+  const mobile = String(user.mobile || "").replace(/\D/g, "");
+  const email = String(user.email || "").trim().toLowerCase();
+
+  try {
+    await Promise.all([
+      AppNavigationEvent.deleteMany({ userId }),
+      ChapterPerformance.deleteMany({ userId }),
+      DailyAssignment.deleteMany({ userId }),
+      DailyTest.deleteMany({ userId }),
+      Invoice.deleteMany({ userId }),
+      LearningSession.deleteMany({ userId }),
+      Mistake.deleteMany({ userId }),
+      MistakeBook.deleteMany({ userId }),
+      Performance.deleteMany({ userId }),
+      PushDeviceToken.deleteMany({ userId }),
+      QuestionAttempt.deleteMany({ userId }),
+      RevisionHistory.deleteMany({ userId }),
+      SessionAttempt.deleteMany({ userId }),
+      Subscription.deleteMany({ userId }),
+      SupportTicket.deleteMany({ userId }),
+      Test.deleteMany({ userId }),
+      UserNotification.deleteMany({ userId }),
+      mobile ? Otp.deleteMany({ mobile }) : Promise.resolve(),
+      email ? AuthOtp.deleteMany({ email }) : Promise.resolve(),
+    ]);
+
+    await User.deleteOne({ _id: user._id });
+    res.json({ success: true, message: "Account deleted permanently" });
+  } catch (error) {
+    req.log.error({ error, userId }, "Delete account error");
+    res.status(500).json({ error: "delete_account_failed", message: "Failed to delete account" });
   }
 });
 

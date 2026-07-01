@@ -8,6 +8,10 @@ export interface IUser extends Document {
   googleId?: string;
   firebaseUid?: string;
   appleId?: string;
+  loginProvider?: "EMAIL" | "GOOGLE" | "APPLE";
+  appleUserId?: string;
+  appleEmail?: string;
+  isAppleLogin?: boolean;
   authTypes: string[];
   name?: string;
   address?: string;
@@ -58,6 +62,10 @@ const UserSchema = new Schema<IUser>(
     googleId: { type: String, unique: true, sparse: true, trim: true },
     firebaseUid: { type: String, unique: true, sparse: true, trim: true },
     appleId: { type: String, unique: true, sparse: true, trim: true },
+    loginProvider: { type: String, enum: ["EMAIL", "GOOGLE", "APPLE"], default: "EMAIL", index: true },
+    appleUserId: { type: String, unique: true, sparse: true, trim: true },
+    appleEmail: { type: String, lowercase: true, trim: true },
+    isAppleLogin: { type: Boolean, default: false, index: true },
     authTypes: { type: [String], default: [] },
     name: String,
     address: { type: String, default: "" },
