@@ -42,3 +42,7 @@ export function getFirebaseAdminApp() {
 export function getMessaging() {
   return getFirebaseAdminApp().messaging();
 }
+
+export function getFirebaseAuth() {
+  return getFirebaseAdminApp().auth();
+}

@@ -1,8 +1,10 @@
 import { Router, type IRouter } from "express";
 import { AuthOtp, AuthSettings, InvoiceSettings, User } from "@api/db";
 import jwt from "jsonwebtoken";
+import type { DecodedIdToken } from "firebase-admin/auth";
 import { generateOtp, generateResetToken, hashOtp, hashPassword, hashResetToken, verifyPassword } from "../lib/password";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
+import { getFirebaseAuth } from "../lib/firebase";
 
 const router: IRouter = Router();
 
@@ -35,14 +37,22 @@ function userResponse(user: any) {
     level: u.level,
     onboardingComplete: u.onboardingComplete,
     mobileVerified: u.mobileVerified,
-    emailVerified: Boolean(u.emailVerified || u.authTypes?.includes("email") || u.authTypes?.includes("google")),
+    emailVerified: Boolean(
+      u.emailVerified ||
+        u.authTypes?.includes("email") ||
+        u.authTypes?.includes("google") ||
+        u.authTypes?.includes("apple"),
+    ),
     authTypes: u.authTypes ?? [],
+    uid: u.firebaseUid,
+    firebaseUid: u.firebaseUid,
     requiresProfileCompletion: Boolean(u.requiresProfileCompletion),
     country: u.country,
     state: u.state,
     city: u.city,
     userType: u.userType,
     profileImage: u.profileImage,
+    photoURL: u.profileImage,
     isActive: u.isActive,
     isBlocked: u.isBlocked,
     lastLoginAt: u.lastLoginAt,
@@ -163,6 +173,7 @@ router.get("/settings", async (_req, res) => {
   res.json({
     emailPasswordEnabled: settings.emailPasswordEnabled,
     googleEnabled: settings.googleEnabled && googleClientIds.length > 0,
+    appleEnabled: settings.appleEnabled !== false,
     googleClientId: settings.googleEnabled && !googleClientIdIsAndroidOnly ? configuredGoogleClientId : "",
     googleAndroidClientId: settings.googleEnabled ? androidClientId || (googleClientIdIsAndroidOnly ? configuredGoogleClientId : "") : "",
     googleIosClientId: settings.googleEnabled ? iosClientId : "",
@@ -341,6 +352,110 @@ router.post("/google", async (req, res) => {
   } catch (error) {
     req.log.error({ error }, "Google login failed");
     res.status(400).json({ error: "google_login_failed", message: "Google login failed" });
+  }
+});
+
+router.post("/apple", async (req, res) => {
+  try {
+    const settings = await getAuthSettings();
+    if (settings.appleEnabled === false) {
+      res.status(403).json({ error: "apple_disabled", message: "Apple login is currently disabled." });
+      return;
+    }
+
+    const firebaseIdToken = String(req.body?.firebaseIdToken || "").trim();
+    if (!firebaseIdToken) {
+      res.status(400).json({ error: "missing_firebase_token", message: "Apple authentication token is required." });
+      return;
+    }
+
+    let appleUser: DecodedIdToken;
+    try {
+      appleUser = await getFirebaseAuth().verifyIdToken(firebaseIdToken, true);
+    } catch (error) {
+      req.log.warn({ error }, "Apple Firebase token verification failed");
+      res.status(401).json({ error: "invalid_firebase_token", message: "Apple authentication could not be verified." });
+      return;
+    }
+
+    if (appleUser.firebase?.sign_in_provider !== "apple.com") {
+      res.status(401).json({ error: "invalid_apple_provider", message: "The authentication token was not issued for Apple sign-in." });
+      return;
+    }
+    if (!checkRateLimit(`apple:${appleUser.uid}`, 12)) {
+      res.status(429).json({ error: "rate_limited", message: "Too many Apple login attempts. Try again later." });
+      return;
+    }
+
+    const identities = appleUser.firebase?.identities as Record<string, unknown> | undefined;
+    const appleIdentities = identities?.["apple.com"];
+    const appleId =
+      (Array.isArray(appleIdentities) && appleIdentities[0]
+        ? String(appleIdentities[0])
+        : appleUser.uid);
+    const email = normalizeEmail(appleUser.email);
+    const submittedName = String(req.body?.fullName || "").trim().slice(0, 120);
+    const name = String(appleUser.name || submittedName || "").trim();
+    const submittedPhoto = String(req.body?.photoURL || "").trim();
+    const photoURL =
+      String(appleUser.picture || "").trim() ||
+      (/^https:\/\//i.test(submittedPhoto) ? submittedPhoto.slice(0, 2048) : "");
+
+    const identityQueries: Record<string, string>[] = [
+      { firebaseUid: appleUser.uid },
+      { appleId },
+    ];
+    if (email) identityQueries.push({ email });
+
+    let user = await User.findOne({ $or: identityQueries });
+    let isNewUser = false;
+    if (!user) {
+      user = await new User({
+        email: email || undefined,
+        firebaseUid: appleUser.uid,
+        appleId,
+        name,
+        profileImage: photoURL,
+        emailVerified: Boolean(appleUser.email_verified),
+        authTypes: ["apple"],
+        onboardingComplete: false,
+        requiresProfileCompletion: !name || !email,
+        mobileVerified: false,
+        isPremium: false,
+        isAdmin: false,
+      }).save();
+      isNewUser = true;
+    } else {
+      user.firebaseUid = user.firebaseUid || appleUser.uid;
+      user.appleId = user.appleId || appleId;
+      user.email = user.email || email || undefined;
+      user.name = user.name || name;
+      user.profileImage = user.profileImage || photoURL;
+      user.emailVerified = Boolean(user.emailVerified || appleUser.email_verified);
+      user.authTypes = [...new Set([...(user.authTypes || []), "apple"])];
+      user.requiresProfileCompletion = !user.name || !user.email;
+    }
+    await markLogin(user);
+
+    if (isNewUser && user.email) {
+      const invoiceSettings = await InvoiceSettings.findOne({ key: "default" });
+      sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.AUTH_REGISTRATION, user.email, {
+        user_name: user.name || "Learner",
+        email: user.email,
+        app_name: invoiceSettings?.companyName || "Krita",
+        support_email: invoiceSettings?.companyEmail || invoiceSettings?.smtp?.fromEmail || "support@krita.com",
+      }).catch((err) => {
+        req.log.warn({ err, userId: String(user._id), email: user.email }, "Apple registration welcome email failed");
+      });
+    }
+
+    res.json({ token: signUser(user, settings), user: userResponse(user), isNewUser });
+  } catch (error) {
+    req.log.error({ error }, "Apple login failed");
+    res.status(400).json({
+      error: "apple_login_failed",
+      message: error instanceof Error ? error.message : "Apple login failed.",
+    });
   }
 });
 

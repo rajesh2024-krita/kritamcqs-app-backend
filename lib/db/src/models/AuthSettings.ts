@@ -4,6 +4,7 @@ export interface IAuthSettings extends Document {
   key: string;
   emailPasswordEnabled: boolean;
   googleEnabled: boolean;
+  appleEnabled: boolean;
   googleClientId?: string;
   googleAndroidClientId?: string;
   googleIosClientId?: string;
@@ -34,6 +35,7 @@ const AuthSettingsSchema = new Schema<IAuthSettings>(
     key: { type: String, default: "default", unique: true, index: true },
     emailPasswordEnabled: { type: Boolean, default: true },
     googleEnabled: { type: Boolean, default: false },
+    appleEnabled: { type: Boolean, default: true },
     googleClientId: { type: String, default: "" },
     googleAndroidClientId: { type: String, default: "" },
     googleIosClientId: { type: String, default: "" },
