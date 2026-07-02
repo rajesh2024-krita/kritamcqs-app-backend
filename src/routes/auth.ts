@@ -98,6 +98,14 @@ function getAppleAudiences(settings: any) {
     .filter(Boolean))];
 }
 
+function isAppleAuthReady(settings: any) {
+  return (
+    process.env["APPLE_AUTH_READY"] === "true" &&
+    settings?.appleEnabled !== false &&
+    getAppleAudiences(settings).length > 0
+  );
+}
+
 function looksLikeConfiguredAndroidClientId(value: unknown, settings: any) {
   const clientId = String(value || "").trim();
   const packageName = String(settings?.googleAndroidPackageName || "com.kritamcqs.androidapp").trim();
@@ -238,7 +246,7 @@ router.get("/settings", async (_req, res) => {
     googleAndroidClientId: settings.googleEnabled ? androidClientId || (googleClientIdIsAndroidOnly ? configuredGoogleClientId : "") : "",
     googleIosClientId: settings.googleEnabled ? iosClientId : "",
     googleAndroidPackageName: settings.googleAndroidPackageName || "com.kritamcqs.androidapp",
-    appleEnabled: settings.appleEnabled !== false && getAppleAudiences(settings).length > 0,
+    appleEnabled: isAppleAuthReady(settings),
     appleBundleId: settings.appleBundleId || process.env["APPLE_BUNDLE_ID"] || "app.kritamcqs.iosapp",
     profileMobileRequired: Boolean(settings.profileMobileRequired),
     consent: {
@@ -424,8 +432,11 @@ router.post("/google", async (req, res) => {
 router.post("/apple", async (req, res) => {
   try {
     const settings = await getAuthSettings();
-    if (settings.appleEnabled === false) {
-      res.status(403).json({ error: "apple_disabled", message: "Apple login is currently disabled." });
+    if (!isAppleAuthReady(settings)) {
+      res.status(503).json({
+        error: "apple_unavailable",
+        message: "Sign in with Apple is not available yet.",
+      });
       return;
     }
 
