@@ -386,29 +386,41 @@ router.post("/apple", async (req, res) => {
 
     const authorizationHeader = String(req.headers.authorization || "");
     const bearerMatch = authorizationHeader.match(/^Bearer\s+(\S+)\s*$/i);
+    const bodyFirebaseIdToken = String(req.body?.firebaseIdToken || "").trim();
+    const firebaseIdToken = bearerMatch?.[1] || bodyFirebaseIdToken;
+    const tokenSource = bearerMatch?.[1]
+      ? "authorization_header"
+      : bodyFirebaseIdToken
+        ? "request_body_fallback"
+        : "missing";
     req.log.info(
       {
         hasAuthorizationHeader: Boolean(authorizationHeader),
         authorizationScheme: authorizationHeader.split(/\s+/, 1)[0] || null,
+        hasBodyFirebaseIdToken: Boolean(bodyFirebaseIdToken),
+        tokenSource,
       },
       "Apple authentication request received",
     );
 
-    if (!bearerMatch?.[1]) {
+    if (!firebaseIdToken) {
       const reason = authorizationHeader
         ? "malformed_bearer_token"
         : "missing_authorization_header";
       req.log.warn({ reason }, "Apple authentication rejected with 401");
       res.status(401).json({
         error: reason,
-        message: "A Firebase ID token is required in the Authorization Bearer header.",
+        message: "A Firebase ID token is required.",
       });
       return;
     }
-    const firebaseIdToken = bearerMatch[1];
     req.log.info(
-      { tokenExtracted: true, tokenLength: firebaseIdToken.length },
-      "Firebase ID token extracted from Bearer header",
+      {
+        tokenExtracted: true,
+        tokenLength: firebaseIdToken.length,
+        tokenSource,
+      },
+      "Firebase ID token extracted",
     );
 
     const submittedName = String(req.body?.fullName || "").trim().slice(0, 120);

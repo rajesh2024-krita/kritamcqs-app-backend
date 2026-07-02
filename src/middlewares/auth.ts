@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 import { User, IUser } from "@api/db";
 import { JWT_SECRET } from "../routes/auth";
+import { getFirebaseAuth } from "../lib/firebase";
 
 export interface AuthenticatedRequest extends Request {
   userId?: string;
@@ -32,21 +33,56 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId?: string };
-    if (!decoded?.userId) {
-      req.log.warn(
-        { path: req.originalUrl, reason: "missing_user_id_claim" },
-        "Application authentication rejected with 401",
+    const unverifiedToken = jwt.decode(token, { complete: true });
+    const algorithm =
+      typeof unverifiedToken === "object" && unverifiedToken?.header
+        ? String(unverifiedToken.header.alg || "")
+        : "";
+    let user: IUser | null;
+    let verifiedUserId = "";
+    let tokenType: "firebase" | "app-session";
+
+    if (algorithm === "RS256") {
+      tokenType = "firebase";
+      const decoded = await getFirebaseAuth().verifyIdToken(token, true);
+      verifiedUserId = decoded.uid;
+      req.log.info(
+        {
+          path: req.originalUrl,
+          tokenType,
+          uid: decoded.uid,
+          provider: decoded.firebase?.sign_in_provider || null,
+          audience: decoded.aud,
+        },
+        "Firebase Bearer token verification succeeded",
       );
-      res.status(401).json({ error: "invalid_token", message: "Invalid or expired token" });
-      return;
+      user = await User.findOne({ firebaseUid: decoded.uid });
+    } else {
+      tokenType = "app-session";
+      const decoded = jwt.verify(token, JWT_SECRET, {
+        algorithms: ["HS256"],
+      }) as { userId?: string };
+      if (!decoded?.userId) {
+        req.log.warn(
+          { path: req.originalUrl, reason: "missing_user_id_claim", tokenType },
+          "Application authentication rejected with 401",
+        );
+        res.status(401).json({ error: "invalid_token", message: "Invalid or expired token" });
+        return;
+      }
+      verifiedUserId = decoded.userId;
+      req.log.info(
+        { path: req.originalUrl, tokenType, userId: decoded.userId },
+        "Application session token verification succeeded",
+      );
+      user = await User.findById(decoded.userId);
     }
 
-    const user = await User.findById(decoded.userId);
     req.log.info(
       {
         path: req.originalUrl,
-        userId: decoded.userId,
+        tokenType,
+        verifiedUserId,
         found: Boolean(user),
       },
       "Application user lookup completed",
@@ -54,7 +90,7 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
 
     if (!user) {
       req.log.warn(
-        { path: req.originalUrl, reason: "user_not_found", userId: decoded.userId },
+        { path: req.originalUrl, reason: "user_not_found", verifiedUserId, tokenType },
         "Application authentication rejected with 401",
       );
       res.status(401).json({ error: "user_not_found", message: "User not found" });
@@ -76,23 +112,29 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     }
     next();
   } catch (error) {
-    const reason =
-      error instanceof jwt.TokenExpiredError
-        ? "token_expired"
-        : error instanceof jwt.JsonWebTokenError
-          ? "invalid_token"
-          : "token_verification_failed";
+    const authError = error as { code?: string; message?: string };
+    const reason = authError?.code === "auth/id-token-expired"
+      ? "firebase_token_expired"
+      : authError?.code === "auth/id-token-revoked"
+        ? "firebase_token_revoked"
+        : authError?.code
+          ? authError.code
+          : error instanceof jwt.TokenExpiredError
+            ? "token_expired"
+            : error instanceof jwt.JsonWebTokenError
+              ? "invalid_token"
+              : "token_verification_failed";
     req.log.warn(
       {
         path: req.originalUrl,
         reason,
-        message: error instanceof Error ? error.message : "Unknown token verification error",
+        message: authError?.message || "Unknown token verification error",
       },
       "Application authentication rejected with 401",
     );
     res.status(401).json({
       error: reason,
-      message: reason === "token_expired" ? "Session expired" : "Invalid token",
+      message: reason.includes("expired") ? "Session expired" : "Invalid token",
     });
   }
 }
