@@ -2,7 +2,6 @@ import { Router, type IRouter } from "express";
 import { AuthOtp, AuthSettings, InvoiceSettings, User } from "@api/db";
 import jwt from "jsonwebtoken";
 import type { DecodedIdToken } from "firebase-admin/auth";
-import { createPublicKey } from "crypto";
 import { generateOtp, generateResetToken, hashOtp, hashPassword, hashResetToken, verifyPassword } from "../lib/password";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 import { getFirebaseAuth } from "../lib/firebase";
@@ -13,7 +12,6 @@ const JWT_SECRET = process.env["SESSION_SECRET"] ?? "krita-secret-key";
 
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
 const googleCertCache: { certs: Record<string, string>; expiresAt: number } = { certs: {}, expiresAt: 0 };
-const appleKeyCache: { keys: Array<Record<string, string>>; expiresAt: number } = { keys: [], expiresAt: 0 };
 
 function checkRateLimit(key: string, maxAttempts = 8, windowMs = 15 * 60 * 1000) {
   const now = Date.now();
@@ -98,14 +96,6 @@ function getAppleAudiences(settings: any) {
     .filter(Boolean))];
 }
 
-function isAppleAuthReady(settings: any) {
-  return (
-    process.env["APPLE_AUTH_READY"] === "true" &&
-    settings?.appleEnabled !== false &&
-    getAppleAudiences(settings).length > 0
-  );
-}
-
 function looksLikeConfiguredAndroidClientId(value: unknown, settings: any) {
   const clientId = String(value || "").trim();
   const packageName = String(settings?.googleAndroidPackageName || "com.kritamcqs.androidapp").trim();
@@ -159,50 +149,6 @@ async function verifyGoogleCredential(credential: string, allowedClientIds: stri
   }) as jwt.JwtPayload;
 }
 
-async function getAppleKeys() {
-  if (appleKeyCache.expiresAt > Date.now() && appleKeyCache.keys.length > 0) {
-    return appleKeyCache.keys;
-  }
-
-  const response = await fetch("https://appleid.apple.com/auth/keys");
-  const payload = (await response.json().catch(() => null)) as { keys?: Array<Record<string, string>> } | null;
-  if (!response.ok || !Array.isArray(payload?.keys)) {
-    throw new Error("Unable to fetch Apple public keys.");
-  }
-
-  const cacheControl = response.headers.get("cache-control") || "";
-  const maxAgeMatch = cacheControl.match(/max-age=(\d+)/);
-  const maxAgeSeconds = maxAgeMatch ? Number(maxAgeMatch[1]) : 3600;
-  appleKeyCache.keys = payload.keys;
-  appleKeyCache.expiresAt = Date.now() + Math.max(300, maxAgeSeconds - 60) * 1000;
-  return appleKeyCache.keys;
-}
-
-async function verifyAppleIdentityToken(identityToken: string, allowedAudiences: string[]) {
-  const decoded = jwt.decode(identityToken, { complete: true });
-  const kid = typeof decoded === "object" && decoded?.header ? String(decoded.header.kid || "") : "";
-  if (!kid) throw new Error("Apple token is missing a key id.");
-
-  const keys = await getAppleKeys();
-  const key = keys.find((item) => item.kid === kid);
-  if (!key?.n || !key?.e) throw new Error("Apple token key is not recognized.");
-
-  const publicKey = createPublicKey({
-    key: {
-      kty: key.kty || "RSA",
-      n: key.n,
-      e: key.e,
-    },
-    format: "jwk",
-  } as any).export({ format: "pem", type: "spki" }) as string;
-
-  return jwt.verify(identityToken, publicKey, {
-    algorithms: ["RS256"],
-    audience: allowedAudiences,
-    issuer: "https://appleid.apple.com",
-  }) as jwt.JwtPayload;
-}
-
 async function markLogin(user: any) {
   if (user.isBlocked || user.isActive === false) {
     throw new Error("This account is not active. Contact support.");
@@ -246,7 +192,7 @@ router.get("/settings", async (_req, res) => {
     googleAndroidClientId: settings.googleEnabled ? androidClientId || (googleClientIdIsAndroidOnly ? configuredGoogleClientId : "") : "",
     googleIosClientId: settings.googleEnabled ? iosClientId : "",
     googleAndroidPackageName: settings.googleAndroidPackageName || "com.kritamcqs.androidapp",
-    appleEnabled: isAppleAuthReady(settings),
+    appleEnabled: settings.appleEnabled !== false && getAppleAudiences(settings).length > 0,
     appleBundleId: settings.appleBundleId || process.env["APPLE_BUNDLE_ID"] || "app.kritamcqs.iosapp",
     profileMobileRequired: Boolean(settings.profileMobileRequired),
     consent: {
@@ -432,75 +378,103 @@ router.post("/google", async (req, res) => {
 router.post("/apple", async (req, res) => {
   try {
     const settings = await getAuthSettings();
-    if (!isAppleAuthReady(settings)) {
-      res.status(503).json({
-        error: "apple_unavailable",
-        message: "Sign in with Apple is not available yet.",
+    if (settings.appleEnabled === false) {
+      req.log.warn({ reason: "apple_disabled" }, "Apple authentication rejected");
+      res.status(403).json({ error: "apple_disabled", message: "Apple login is currently disabled." });
+      return;
+    }
+
+    const authorizationHeader = String(req.headers.authorization || "");
+    const bearerMatch = authorizationHeader.match(/^Bearer\s+(\S+)\s*$/i);
+    req.log.info(
+      {
+        hasAuthorizationHeader: Boolean(authorizationHeader),
+        authorizationScheme: authorizationHeader.split(/\s+/, 1)[0] || null,
+      },
+      "Apple authentication request received",
+    );
+
+    if (!bearerMatch?.[1]) {
+      const reason = authorizationHeader
+        ? "malformed_bearer_token"
+        : "missing_authorization_header";
+      req.log.warn({ reason }, "Apple authentication rejected with 401");
+      res.status(401).json({
+        error: reason,
+        message: "A Firebase ID token is required in the Authorization Bearer header.",
+      });
+      return;
+    }
+    const firebaseIdToken = bearerMatch[1];
+    req.log.info(
+      { tokenExtracted: true, tokenLength: firebaseIdToken.length },
+      "Firebase ID token extracted from Bearer header",
+    );
+
+    const submittedName = String(req.body?.fullName || "").trim().slice(0, 120);
+    const submittedPhoto = String(req.body?.photoURL || "").trim();
+    let appleUser: DecodedIdToken;
+    try {
+      appleUser = await getFirebaseAuth().verifyIdToken(firebaseIdToken, true);
+    } catch (error) {
+      const firebaseError = error as { code?: string; message?: string };
+      const reason = String(firebaseError?.code || "invalid_firebase_token");
+      req.log.warn(
+        { reason, message: firebaseError?.message || "Firebase token verification failed" },
+        "Apple authentication rejected with 401",
+      );
+      res.status(401).json({
+        error: reason,
+        message:
+          reason === "auth/id-token-expired"
+            ? "The Firebase ID token has expired. Sign in with Apple again."
+            : reason === "auth/id-token-revoked"
+              ? "The Firebase session was revoked. Sign in with Apple again."
+              : "Apple authentication could not be verified.",
       });
       return;
     }
 
-    const firebaseIdToken = String(req.body?.firebaseIdToken || "").trim();
-    const identityToken = String(req.body?.identityToken || "").trim();
-    if (!firebaseIdToken && !identityToken) {
-      res.status(400).json({ error: "missing_firebase_token", message: "Apple authentication token is required." });
+    const signInProvider = appleUser.firebase?.sign_in_provider || "";
+    req.log.info(
+      {
+        uid: appleUser.uid,
+        provider: signInProvider,
+        audience: appleUser.aud,
+        emailVerified: Boolean(appleUser.email_verified),
+      },
+      "Firebase ID token verified",
+    );
+    if (signInProvider !== "apple.com") {
+      req.log.warn(
+        { reason: "invalid_apple_provider", provider: signInProvider || null },
+        "Apple authentication rejected with 401",
+      );
+      res.status(401).json({
+        error: "invalid_apple_provider",
+        message: "The Firebase token was not issued for Apple sign-in.",
+      });
       return;
     }
 
-    const submittedName = String(req.body?.fullName || "").trim().slice(0, 120);
-    const submittedPhoto = String(req.body?.photoURL || "").trim();
-    const firstName = String(req.body?.givenName || "").trim();
-    const lastName = String(req.body?.familyName || "").trim();
-    const submittedFullName = submittedName || [firstName, lastName].filter(Boolean).join(" ").trim();
-
-    let firebaseUid: string | undefined;
-    let appleUserId = "";
-    let email: string | null = null;
-    let name = submittedFullName;
+    const identities = appleUser.firebase?.identities as Record<string, unknown> | undefined;
+    const appleIdentities = identities?.["apple.com"];
+    const firebaseUid = appleUser.uid;
+    const appleUserId =
+      Array.isArray(appleIdentities) && appleIdentities[0]
+        ? String(appleIdentities[0])
+        : firebaseUid;
+    const email = normalizeEmail(appleUser.email);
+    const name = String(appleUser.name || submittedName || "").trim();
     let photoURL = /^https:\/\//i.test(submittedPhoto) ? submittedPhoto.slice(0, 2048) : "";
-    let emailVerified = false;
-
-    if (firebaseIdToken) {
-      let appleUser: DecodedIdToken;
-      try {
-        appleUser = await getFirebaseAuth().verifyIdToken(firebaseIdToken, true);
-      } catch (error) {
-        req.log.warn({ error }, "Apple Firebase token verification failed");
-        res.status(401).json({ error: "invalid_firebase_token", message: "Apple authentication could not be verified." });
-        return;
-      }
-      if (appleUser.firebase?.sign_in_provider !== "apple.com") {
-        res.status(401).json({ error: "invalid_apple_provider", message: "The authentication token was not issued for Apple sign-in." });
-        return;
-      }
-
-      const identities = appleUser.firebase?.identities as Record<string, unknown> | undefined;
-      const appleIdentities = identities?.["apple.com"];
-      firebaseUid = appleUser.uid;
-      appleUserId =
-        Array.isArray(appleIdentities) && appleIdentities[0]
-          ? String(appleIdentities[0])
-          : appleUser.uid;
-      email = normalizeEmail(appleUser.email);
-      name = String(appleUser.name || submittedFullName || "").trim();
-      photoURL = String(appleUser.picture || "").trim() || photoURL;
-      emailVerified = Boolean(appleUser.email_verified);
-    } else {
-      const allowedAudiences = getAppleAudiences(settings);
-      let appleUser: jwt.JwtPayload;
-      try {
-        appleUser = await verifyAppleIdentityToken(identityToken, allowedAudiences);
-      } catch (error) {
-        req.log.warn({ error }, "Apple token verification failed");
-        res.status(401).json({ error: "invalid_apple_token", message: "Apple verification failed." });
-        return;
-      }
-      appleUserId = String(appleUser.sub || "").trim();
-      email = normalizeEmail(appleUser.email);
-      emailVerified = appleUser.email_verified === true || appleUser.email_verified === "true";
-    }
+    photoURL = String(appleUser.picture || "").trim() || photoURL;
+    const emailVerified = Boolean(appleUser.email_verified);
 
     if (!appleUserId) {
+      req.log.warn(
+        { reason: "missing_apple_identifier", uid: firebaseUid },
+        "Apple authentication rejected with 401",
+      );
       res.status(401).json({ error: "invalid_apple_token", message: "Apple account identifier is missing." });
       return;
     }
@@ -517,6 +491,14 @@ router.post("/apple", async (req, res) => {
     if (email) identityQueries.push({ email });
 
     let user = await User.findOne({ $or: identityQueries });
+    req.log.info(
+      {
+        firebaseUid,
+        found: Boolean(user),
+        matchedUserId: user?._id ? String(user._id) : null,
+      },
+      "Apple user lookup completed",
+    );
     let isNewUser = false;
     if (!user) {
       user = await new User({
@@ -566,7 +548,16 @@ router.post("/apple", async (req, res) => {
       });
     }
 
-    res.json({ token: signUser(user, settings), user: userResponse(user), isNewUser });
+    const appToken = signUser(user, settings);
+    req.log.info(
+      {
+        userId: String(user._id),
+        firebaseUid,
+        isNewUser,
+      },
+      "Apple application session created",
+    );
+    res.json({ token: appToken, user: userResponse(user), isNewUser });
   } catch (error) {
     req.log.error({ error }, "Apple login failed");
     res.status(400).json({
