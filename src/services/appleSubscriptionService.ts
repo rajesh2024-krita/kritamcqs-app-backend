@@ -123,6 +123,7 @@ export async function saveVerifiedAppleSubscription(
 }
 
 export async function updateSubscriptionFromWebhook(params: {
+  userId?: string;
   originalTransactionId: string;
   transactionId?: string;
   productId?: string;
@@ -141,7 +142,41 @@ export async function updateSubscriptionFromWebhook(params: {
   const subscription = await UserSubscription.findOne({
     originalTransactionId: params.originalTransactionId,
   });
-  if (!subscription) return null;
+  if (!subscription) {
+    if (
+      !params.userId ||
+      !params.transactionId ||
+      !params.productId ||
+      !params.purchaseDate ||
+      !params.expiryDate ||
+      !params.status
+    ) {
+      return null;
+    }
+    const created = await UserSubscription.create({
+      userId: params.userId,
+      originalTransactionId: params.originalTransactionId,
+      transactionId: params.transactionId,
+      productId: params.productId,
+      purchaseDate: params.purchaseDate,
+      expiryDate: params.expiryDate,
+      subscriptionStatus: params.status,
+      autoRenewStatus: params.autoRenewStatus ?? true,
+      platform: "ios",
+      environment: params.environment,
+      latestWebhookEvent: params.latestWebhookEvent,
+    });
+    await syncUserPremiumEntitlement(params.userId);
+    logger.info(
+      {
+        userId: params.userId,
+        originalTransactionId: params.originalTransactionId,
+        event: params.latestWebhookEvent.type,
+      },
+      "Apple subscription created from verified webhook",
+    );
+    return created;
+  }
 
   if (params.transactionId) subscription.transactionId = params.transactionId;
   if (params.productId) subscription.productId = params.productId;

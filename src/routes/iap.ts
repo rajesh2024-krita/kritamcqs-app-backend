@@ -3,11 +3,13 @@ import { requireAuth } from "../middlewares/auth";
 import {
   restoreApplePurchase,
   verifyApplePurchase,
+  getAppleAppAccountToken,
 } from "../controllers/appleIapController";
 
 const router: IRouter = Router();
 
 router.post("/verify", requireAuth, verifyApplePurchase);
 router.post("/restore", requireAuth, restoreApplePurchase);
+router.post("/account-token", requireAuth, getAppleAppAccountToken);
 
 export default router;

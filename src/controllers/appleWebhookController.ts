@@ -3,7 +3,7 @@ import { z } from "zod";
 import { APPLE_PRODUCT_ID } from "../services/appleReceiptService";
 import { verifyAppleNotification } from "../services/appleNotificationService";
 import { updateSubscriptionFromWebhook } from "../services/appleSubscriptionService";
-import type { AppleSubscriptionStatus } from "@api/db";
+import { User, type AppleSubscriptionStatus } from "@api/db";
 
 const webhookSchema = z.object({
   signedPayload: z.string().min(20).max(10_000_000),
@@ -56,7 +56,12 @@ export async function handleAppleWebhook(req: Request, res: Response) {
     if (eventType === "EXPIRED") status = "expired";
     if (eventType === "REFUND") status = "refunded";
     if (eventType === "DID_CHANGE_RENEWAL_STATUS") {
-      status = renewal?.autoRenewStatus === 0 ? "cancelled" : "active";
+      status =
+        renewal?.autoRenewStatus === undefined
+          ? undefined
+          : renewal.autoRenewStatus === 0
+            ? "cancelled"
+            : "active";
     }
 
     const transactionExpiry = transaction?.expiresDate;
@@ -65,8 +70,12 @@ export async function handleAppleWebhook(req: Request, res: Response) {
       transactionExpiry || graceExpiry
         ? Math.max(transactionExpiry || 0, graceExpiry || 0)
         : undefined;
+    const linkedUser = transaction?.appAccountToken
+      ? await User.findOne({ appleAppAccountToken: transaction.appAccountToken }).select("_id")
+      : null;
 
     const updated = await updateSubscriptionFromWebhook({
+      userId: linkedUser?._id.toString(),
       originalTransactionId,
       transactionId: transaction?.transactionId,
       productId: transaction?.productId,

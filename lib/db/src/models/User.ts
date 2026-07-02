@@ -11,6 +11,7 @@ export interface IUser extends Document {
   loginProvider?: "EMAIL" | "GOOGLE" | "APPLE";
   appleUserId?: string;
   appleEmail?: string;
+  appleAppAccountToken?: string;
   isAppleLogin?: boolean;
   authTypes: string[];
   name?: string;
@@ -68,6 +69,7 @@ const UserSchema = new Schema<IUser>(
     loginProvider: { type: String, enum: ["EMAIL", "GOOGLE", "APPLE"], default: "EMAIL", index: true },
     appleUserId: { type: String, unique: true, sparse: true, trim: true },
     appleEmail: { type: String, lowercase: true, trim: true },
+    appleAppAccountToken: { type: String, unique: true, sparse: true, index: true },
     isAppleLogin: { type: Boolean, default: false, index: true },
     authTypes: { type: [String], default: [] },
     name: String,

@@ -1,5 +1,7 @@
 import type { Response } from "express";
+import crypto from "node:crypto";
 import { z } from "zod";
+import { User } from "@api/db";
 import type { AuthenticatedRequest } from "../middlewares/auth";
 import {
   AppleReceiptError,
@@ -112,5 +114,27 @@ export async function restoreApplePurchase(req: AuthenticatedRequest, res: Respo
   } catch (error) {
     req.log.warn({ err: error, userId: req.userId }, "Apple purchase restore failed");
     respondWithError(res, error);
+  }
+}
+
+export async function getAppleAppAccountToken(req: AuthenticatedRequest, res: Response) {
+  try {
+    const user = await User.findById(req.userId);
+    if (!user) {
+      res.status(404).json({ success: false, error: "user_not_found", message: "User not found." });
+      return;
+    }
+    if (!user.appleAppAccountToken) {
+      user.appleAppAccountToken = crypto.randomUUID();
+      await user.save();
+    }
+    res.json({ success: true, appAccountToken: user.appleAppAccountToken });
+  } catch (error) {
+    req.log.warn({ err: error, userId: req.userId }, "Apple app account token creation failed");
+    res.status(500).json({
+      success: false,
+      error: "apple_account_token_error",
+      message: "Unable to prepare the App Store purchase.",
+    });
   }
 }
