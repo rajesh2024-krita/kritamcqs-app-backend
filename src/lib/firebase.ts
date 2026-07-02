@@ -9,26 +9,71 @@ import { getAuth } from "firebase-admin/auth";
 import { getMessaging as getAdminMessaging } from "firebase-admin/messaging";
 import { logger } from "./logger";
 
-function parseServiceAccount(): ServiceAccount | null {
+type ServiceAccountSource = "base64" | "json" | "individual_env_vars";
+
+function normalizeServiceAccount(value: unknown): ServiceAccount {
+  const record = value as Record<string, unknown>;
+  const projectId = String(record?.["projectId"] || record?.["project_id"] || "").trim();
+  const clientEmail = String(record?.["clientEmail"] || record?.["client_email"] || "").trim();
+  const privateKey = String(record?.["privateKey"] || record?.["private_key"] || "")
+    .replace(/\\n/g, "\n")
+    .trim();
+  if (!projectId || !clientEmail || !privateKey) {
+    throw new Error("Firebase service account is missing project_id, client_email, or private_key.");
+  }
+  return { projectId, clientEmail, privateKey };
+}
+
+function parseServiceAccount(): {
+  serviceAccount: ServiceAccount | null;
+  source: ServiceAccountSource | null;
+} {
   const rawJson = process.env["FIREBASE_SERVICE_ACCOUNT_JSON"];
   const rawBase64 = process.env["FIREBASE_SERVICE_ACCOUNT_BASE64"];
   const projectId = process.env["FIREBASE_PROJECT_ID"];
   const clientEmail = process.env["FIREBASE_CLIENT_EMAIL"];
   const privateKey = process.env["FIREBASE_PRIVATE_KEY"]?.replace(/\\n/g, "\n");
 
-  if (rawJson) {
-    return JSON.parse(rawJson) as ServiceAccount;
+  // Base64 is preferred because process managers and shell parsers commonly
+  // damage multiline JSON/private-key values.
+  if (rawBase64) {
+    try {
+      return {
+        serviceAccount: normalizeServiceAccount(
+          JSON.parse(Buffer.from(rawBase64.trim(), "base64").toString("utf8")),
+        ),
+        source: "base64",
+      };
+    } catch (error) {
+      logger.error(
+        { message: error instanceof Error ? error.message : "Unknown Base64 credential error" },
+        "FIREBASE_SERVICE_ACCOUNT_BASE64 is invalid; trying another credential source",
+      );
+    }
   }
 
-  if (rawBase64) {
-    return JSON.parse(Buffer.from(rawBase64, "base64").toString("utf8")) as ServiceAccount;
+  if (rawJson) {
+    try {
+      return {
+        serviceAccount: normalizeServiceAccount(JSON.parse(rawJson)),
+        source: "json",
+      };
+    } catch (error) {
+      logger.error(
+        { message: error instanceof Error ? error.message : "Unknown JSON credential error" },
+        "FIREBASE_SERVICE_ACCOUNT_JSON is invalid; trying individual environment variables",
+      );
+    }
   }
 
   if (projectId && clientEmail && privateKey) {
-    return { projectId, clientEmail, privateKey };
+    return {
+      serviceAccount: normalizeServiceAccount({ projectId, clientEmail, privateKey }),
+      source: "individual_env_vars",
+    };
   }
 
-  return null;
+  return { serviceAccount: null, source: null };
 }
 
 function getServiceAccountProjectId(serviceAccount: ServiceAccount | null) {
@@ -42,7 +87,7 @@ export function getFirebaseAdminApp() {
     return getApp();
   }
 
-  const serviceAccount = parseServiceAccount();
+  const { serviceAccount, source } = parseServiceAccount();
   const environmentProjectId = String(process.env["FIREBASE_PROJECT_ID"] || "").trim();
   const serviceAccountProjectId = getServiceAccountProjectId(serviceAccount);
   const projectId = serviceAccountProjectId || environmentProjectId;
@@ -67,11 +112,7 @@ export function getFirebaseAdminApp() {
   logger.info(
     {
       projectId,
-      credentialSource: process.env["FIREBASE_SERVICE_ACCOUNT_JSON"]
-        ? "json"
-        : process.env["FIREBASE_SERVICE_ACCOUNT_BASE64"]
-          ? "base64"
-          : "individual_env_vars",
+      credentialSource: source,
     },
     "Initializing Firebase Admin",
   );

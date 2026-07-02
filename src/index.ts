@@ -1,7 +1,7 @@
+import "dotenv/config";
 import { connect } from "@api/db";
 import app from "./app";
 import { logger } from "./lib/logger";
-import 'dotenv/config';
 import { createServer } from "node:http";
 import { startExpiryReminderWorker } from "./lib/invoices";
 

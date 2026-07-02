@@ -441,14 +441,17 @@ router.post("/apple", async (req, res) => {
         | undefined;
       const firebaseAdminApp = getFirebaseAdminApp();
       adminProjectId = firebaseAdminApp.options.projectId || null;
+      const tokenAlgorithm =
+        typeof unverified === "object" && unverified?.header
+          ? String(unverified.header.alg || "")
+          : "";
+      const tokenIssuer = String(unverifiedPayload.iss || "");
+      const tokenAudience = String(unverifiedPayload.aud || "");
       req.log.info(
         {
-          tokenAlgorithm:
-            typeof unverified === "object" && unverified?.header
-              ? unverified.header.alg
-              : null,
-          tokenIssuer: unverifiedPayload.iss || null,
-          tokenAudience: unverifiedPayload.aud || null,
+          tokenAlgorithm: tokenAlgorithm || null,
+          tokenIssuer: tokenIssuer || null,
+          tokenAudience: tokenAudience || null,
           tokenSubject: unverifiedPayload.sub || null,
           tokenProvider: unverifiedFirebase?.sign_in_provider || null,
           adminProjectId,
@@ -456,18 +459,51 @@ router.post("/apple", async (req, res) => {
         "Firebase token claims before verification",
       );
 
+      if (tokenIssuer === "https://appleid.apple.com") {
+        throw Object.assign(
+          new Error("Received an Apple identity token instead of a Firebase ID token."),
+          { code: "apple_identity_token_received" },
+        );
+      }
+      if (tokenAlgorithm !== "RS256" || !tokenIssuer.startsWith("https://securetoken.google.com/")) {
+        throw Object.assign(
+          new Error("The supplied Bearer value is not a Firebase ID token."),
+          { code: "invalid_firebase_token_format" },
+        );
+      }
+      if (
+        adminProjectId &&
+        (tokenAudience !== adminProjectId ||
+          tokenIssuer !== `https://securetoken.google.com/${adminProjectId}`)
+      ) {
+        throw Object.assign(
+          new Error(
+            `Firebase project mismatch: token audience is "${tokenAudience}" but backend project is "${adminProjectId}".`,
+          ),
+          { code: "firebase_project_mismatch" },
+        );
+      }
+
       // Signature, issuer, audience, expiry, and subject are verified here.
       // Revocation checks are intentionally separate because they require an
       // additional user lookup and are not part of normal ID-token validation.
       appleUser = await getFirebaseAuth().verifyIdToken(firebaseIdToken);
     } catch (error) {
       const firebaseError = error as { code?: string; message?: string; name?: string };
-      const reason = String(firebaseError?.code || "invalid_firebase_token");
+      const verificationMessage = String(firebaseError?.message || "");
+      const reason = String(
+        firebaseError?.code ||
+        (/credential|service account|private key|default credentials|project id/i.test(verificationMessage)
+          ? "firebase_admin_credentials_invalid"
+          : /fetch|network|enotfound|econn|certificate/i.test(verificationMessage)
+            ? "firebase_verification_network_error"
+            : "invalid_firebase_token"),
+      );
       req.log.warn(
         {
           reason,
           errorName: firebaseError?.name || null,
-          message: firebaseError?.message || "Firebase token verification failed",
+          message: verificationMessage || "Firebase token verification failed",
           adminProjectId,
         },
         "Apple authentication rejected with 401",
@@ -479,6 +515,14 @@ router.post("/apple", async (req, res) => {
             ? "The Firebase ID token has expired. Sign in with Apple again."
             : reason === "auth/id-token-revoked"
               ? "The Firebase session was revoked. Sign in with Apple again."
+              : reason === "apple_identity_token_received"
+                ? "The app sent an Apple identity token instead of a Firebase ID token."
+                : reason === "firebase_project_mismatch"
+                  ? "The app and backend are configured for different Firebase projects."
+                  : reason === "firebase_admin_credentials_invalid"
+                    ? "Firebase Admin credentials are missing or invalid on the backend."
+                    : reason === "firebase_verification_network_error"
+                      ? "The backend could not reach Firebase token verification services."
               : "Apple authentication could not be verified.",
       });
       return;
