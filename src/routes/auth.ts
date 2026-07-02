@@ -2,9 +2,10 @@ import { Router, type IRouter } from "express";
 import { AuthOtp, AuthSettings, InvoiceSettings, User } from "@api/db";
 import jwt from "jsonwebtoken";
 import type { DecodedIdToken } from "firebase-admin/auth";
+import { createHash } from "node:crypto";
 import { generateOtp, generateResetToken, hashOtp, hashPassword, hashResetToken, verifyPassword } from "../lib/password";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
-import { getFirebaseAuth } from "../lib/firebase";
+import { getFirebaseAdminApp, getFirebaseAuth } from "../lib/firebase";
 
 const router: IRouter = Router();
 
@@ -418,6 +419,7 @@ router.post("/apple", async (req, res) => {
       {
         tokenExtracted: true,
         tokenLength: firebaseIdToken.length,
+        tokenFingerprint: createHash("sha256").update(firebaseIdToken).digest("hex").slice(0, 12),
         tokenSource,
       },
       "Firebase ID token extracted",
@@ -426,13 +428,48 @@ router.post("/apple", async (req, res) => {
     const submittedName = String(req.body?.fullName || "").trim().slice(0, 120);
     const submittedPhoto = String(req.body?.photoURL || "").trim();
     let appleUser: DecodedIdToken;
+    let adminProjectId: string | null = null;
     try {
-      appleUser = await getFirebaseAuth().verifyIdToken(firebaseIdToken, true);
+      const unverified = jwt.decode(firebaseIdToken, { complete: true });
+      const unverifiedPayload =
+        typeof unverified === "object" && unverified?.payload &&
+        typeof unverified.payload === "object"
+          ? unverified.payload as jwt.JwtPayload
+          : {};
+      const unverifiedFirebase = unverifiedPayload["firebase"] as
+        | { sign_in_provider?: string }
+        | undefined;
+      const firebaseAdminApp = getFirebaseAdminApp();
+      adminProjectId = firebaseAdminApp.options.projectId || null;
+      req.log.info(
+        {
+          tokenAlgorithm:
+            typeof unverified === "object" && unverified?.header
+              ? unverified.header.alg
+              : null,
+          tokenIssuer: unverifiedPayload.iss || null,
+          tokenAudience: unverifiedPayload.aud || null,
+          tokenSubject: unverifiedPayload.sub || null,
+          tokenProvider: unverifiedFirebase?.sign_in_provider || null,
+          adminProjectId,
+        },
+        "Firebase token claims before verification",
+      );
+
+      // Signature, issuer, audience, expiry, and subject are verified here.
+      // Revocation checks are intentionally separate because they require an
+      // additional user lookup and are not part of normal ID-token validation.
+      appleUser = await getFirebaseAuth().verifyIdToken(firebaseIdToken);
     } catch (error) {
-      const firebaseError = error as { code?: string; message?: string };
+      const firebaseError = error as { code?: string; message?: string; name?: string };
       const reason = String(firebaseError?.code || "invalid_firebase_token");
       req.log.warn(
-        { reason, message: firebaseError?.message || "Firebase token verification failed" },
+        {
+          reason,
+          errorName: firebaseError?.name || null,
+          message: firebaseError?.message || "Firebase token verification failed",
+          adminProjectId,
+        },
         "Apple authentication rejected with 401",
       );
       res.status(401).json({

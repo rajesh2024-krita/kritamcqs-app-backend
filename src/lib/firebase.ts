@@ -1,4 +1,12 @@
-import admin, { type ServiceAccount } from "firebase-admin";
+import {
+  cert,
+  getApp,
+  getApps,
+  initializeApp,
+  type ServiceAccount,
+} from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
+import { getMessaging as getAdminMessaging } from "firebase-admin/messaging";
 import { logger } from "./logger";
 
 function parseServiceAccount(): ServiceAccount | null {
@@ -23,26 +31,60 @@ function parseServiceAccount(): ServiceAccount | null {
   return null;
 }
 
+function getServiceAccountProjectId(serviceAccount: ServiceAccount | null) {
+  if (!serviceAccount) return "";
+  const account = serviceAccount as ServiceAccount & { project_id?: string };
+  return String(account.projectId || account.project_id || "").trim();
+}
+
 export function getFirebaseAdminApp() {
-  if (admin.apps.length) {
-    return admin.app();
+  if (getApps().length) {
+    return getApp();
   }
 
   const serviceAccount = parseServiceAccount();
-  if (!serviceAccount) {
-    logger.warn("Firebase Admin credentials are not configured; FCM sends will fail until env vars are set.");
-    return admin.initializeApp();
+  const environmentProjectId = String(process.env["FIREBASE_PROJECT_ID"] || "").trim();
+  const serviceAccountProjectId = getServiceAccountProjectId(serviceAccount);
+  const projectId = serviceAccountProjectId || environmentProjectId;
+  if (
+    serviceAccountProjectId &&
+    environmentProjectId &&
+    serviceAccountProjectId !== environmentProjectId
+  ) {
+    throw new Error(
+      `Firebase project mismatch: service account uses "${serviceAccountProjectId}" but FIREBASE_PROJECT_ID is "${environmentProjectId}".`,
+    );
   }
 
-  return admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+  if (!serviceAccount) {
+    logger.warn(
+      { projectId: projectId || null },
+      "Firebase Admin credentials are not configured; application default credentials will be used.",
+    );
+    return initializeApp(projectId ? { projectId } : undefined);
+  }
+
+  logger.info(
+    {
+      projectId,
+      credentialSource: process.env["FIREBASE_SERVICE_ACCOUNT_JSON"]
+        ? "json"
+        : process.env["FIREBASE_SERVICE_ACCOUNT_BASE64"]
+          ? "base64"
+          : "individual_env_vars",
+    },
+    "Initializing Firebase Admin",
+  );
+  return initializeApp({
+    credential: cert(serviceAccount),
+    projectId,
   });
 }
 
 export function getMessaging() {
-  return getFirebaseAdminApp().messaging();
+  return getAdminMessaging(getFirebaseAdminApp());
 }
 
 export function getFirebaseAuth() {
-  return getFirebaseAdminApp().auth();
+  return getAuth(getFirebaseAdminApp());
 }
