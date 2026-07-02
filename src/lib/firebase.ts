@@ -7,9 +7,30 @@ import {
 } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getMessaging as getAdminMessaging } from "firebase-admin/messaging";
+import { config as loadEnv } from "dotenv";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { logger } from "./logger";
 
 type ServiceAccountSource = "base64" | "json" | "individual_env_vars";
+
+function loadBackendEnvironment() {
+  const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    process.env["DOTENV_CONFIG_PATH"],
+    path.resolve(process.cwd(), ".env"),
+    path.resolve(moduleDirectory, "..", ".env"),
+    path.resolve(moduleDirectory, "..", "..", ".env"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  const environmentPath = candidates.find((candidate) => existsSync(candidate));
+  if (environmentPath) {
+    loadEnv({ path: environmentPath, override: false, quiet: true });
+  }
+}
+
+loadBackendEnvironment();
 
 function normalizeServiceAccount(value: unknown): ServiceAccount {
   const record = value as Record<string, unknown>;
