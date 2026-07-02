@@ -60,6 +60,7 @@ export * from "./models/MockTest";
 export * from "./models/ChapterPerformance";
 export * from "./models/Mistake";
 export * from "./models/Subscription";
+export * from "./models/UserSubscription";
 export * from "./models/SubscriptionPlan";
 export * from "./models/SubscriptionFreeCard";
 export * from "./models/SubscriptionStatCard";

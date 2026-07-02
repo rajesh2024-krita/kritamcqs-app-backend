@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 import { User, IUser } from "@api/db";
 import { JWT_SECRET } from "../routes/auth";
 import { getFirebaseAuth } from "../lib/firebase";
+import { syncUserPremiumEntitlement } from "../services/appleSubscriptionService";
 
 export interface AuthenticatedRequest extends Request {
   userId?: string;
@@ -105,10 +106,8 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     req.userId = user._id.toString();
     req.user = user;
     if (user.isPremium && user.premiumExpiresAt && user.premiumExpiresAt < new Date()) {
-      user.isPremium = false;
-      user.premiumExpiresAt = undefined;
-      await user.save();
-      req.user = user;
+      await syncUserPremiumEntitlement(req.userId);
+      req.user = (await User.findById(req.userId)) ?? user;
     }
     next();
   } catch (error) {

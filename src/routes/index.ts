@@ -26,6 +26,8 @@ import contentRouter from "./content";
 import usageRouter from "./usage";
 import websiteContentRouter from "./website-content";
 import notificationsRouter from "./notifications";
+import iapRouter from "./iap";
+import appleRouter from "./apple";
 
 const router: IRouter = Router();
 
@@ -54,6 +56,8 @@ router.use("/content", contentRouter);
 router.use("/usage", usageRouter);
 router.use("/website-content", websiteContentRouter);
 router.use("/notifications", notificationsRouter);
+router.use("/iap", iapRouter);
+router.use("/apple", appleRouter);
 router.use("/admin-auth", adminAuthRouter);
 router.use("/admin", adminRouter);
 

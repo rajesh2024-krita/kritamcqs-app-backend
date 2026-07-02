@@ -33,6 +33,9 @@ export interface IUser extends Document {
   lastLoginAt?: Date;
   isPremium: boolean;
   premiumExpiresAt?: Date;
+  premiumPlan?: string;
+  premiumExpiry?: Date;
+  paymentPlatform?: "ios" | "android" | "web";
   lastPurchase?: {
     subscriptionId?: string;
     planId?: string;
@@ -87,6 +90,9 @@ const UserSchema = new Schema<IUser>(
     lastLoginAt: Date,
     isPremium: { type: Boolean, default: false },
     premiumExpiresAt: Date,
+    premiumPlan: String,
+    premiumExpiry: Date,
+    paymentPlatform: { type: String, enum: ["ios", "android", "web"] },
     lastPurchase: {
       subscriptionId: String,
       planId: String,
