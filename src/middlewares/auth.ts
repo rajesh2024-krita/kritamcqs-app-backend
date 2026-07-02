@@ -44,7 +44,7 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
 
     if (algorithm === "RS256") {
       tokenType = "firebase";
-      const decoded = await getFirebaseAuth().verifyIdToken(token, true);
+      const decoded = await getFirebaseAuth().verifyIdToken(token);
       verifiedUserId = decoded.uid;
       req.log.info(
         {
