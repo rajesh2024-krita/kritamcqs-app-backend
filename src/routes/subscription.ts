@@ -347,18 +347,24 @@ router.get("/history", requireAuth, async (req: AuthenticatedRequest, res) => {
   const current = purchases.find((item) => item.status === "active" && (!item.endDate || item.endDate >= new Date())) ?? null;
   const planIds = [...new Set(purchases.map((item) => String(item.planId)).filter(Boolean))];
   const plans = planIds.length ? await SubscriptionPlan.find({ planId: { $in: planIds } }) : [];
-  const planMap = new Map(plans.map((item) => [String(item.planId), mapPlan(item)]));
+  const planMap = new Map(
+    plans.map((item) => [`${item.platform || "android"}:${String(item.planId)}`, mapPlan(item)]),
+  );
+  const purchasePlan = (item: any) => {
+    const platform = item.platform === "ios" || item.paymentProvider === "apple" ? "ios" : "android";
+    return planMap.get(`${platform}:${String(item.planId)}`);
+  };
 
   res.json({
     currentPurchase: current
       ? {
           ...current.toJSON(),
-          planName: planMap.get(String(current.planId))?.name ?? current.planId,
+          planName: purchasePlan(current)?.name ?? current.planId,
         }
       : null,
     purchases: purchases.map((item) => ({
       ...item.toJSON(),
-      planName: planMap.get(String(item.planId))?.name ?? item.planId,
+      planName: purchasePlan(item)?.name ?? item.planId,
     })),
   });
 });

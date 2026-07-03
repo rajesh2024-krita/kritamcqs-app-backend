@@ -959,7 +959,12 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
 
   const [user, plan] = await Promise.all([
     User.findById(subscription.userId),
-    SubscriptionPlan.findOne({ planId: subscription.planId }),
+    SubscriptionPlan.findOne({
+      planId: subscription.planId,
+      ...(subscription.platform === "ios" || subscription.paymentProvider === "apple"
+        ? { platform: "ios" }
+        : { $or: [{ platform: "android" }, { platform: { $exists: false } }] }),
+    }),
   ]);
 
   const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${String(Date.now()).slice(-6)}`;
