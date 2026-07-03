@@ -8,23 +8,32 @@ import {
   APPLE_PRODUCT_ID,
   verifyAppleReceipt,
 } from "../services/appleReceiptService";
+import { verifyAppleTransaction } from "../services/appleNotificationService";
 import {
   saveVerifiedAppleSubscription,
   SubscriptionOwnershipError,
 } from "../services/appleSubscriptionService";
+
+const appleProofFields = {
+  receipt: z.string().min(20).max(10_000_000).optional(),
+  signedTransactionInfo: z.string().min(20).max(10_000_000).optional(),
+};
 
 const verifySchema = z.object({
   planId: z.string().min(1),
   productId: z.string().min(1),
   transactionId: z.string().min(1),
   originalTransactionId: z.string().min(1),
-  receipt: z.string().min(20).max(10_000_000),
+  ...appleProofFields,
   platform: z.literal("ios"),
+}).refine((body) => Boolean(body.receipt || body.signedTransactionInfo), {
+  message: "An Apple receipt or signed transaction is required.",
 });
 
-const restoreSchema = z.object({
-  receipt: z.string().min(20).max(10_000_000),
-});
+const restoreSchema = z.object(appleProofFields).refine(
+  (body) => Boolean(body.receipt || body.signedTransactionInfo),
+  { message: "An Apple receipt or signed transaction is required." },
+);
 
 function respondWithError(res: Response, error: unknown) {
   if (error instanceof z.ZodError) {
@@ -76,7 +85,9 @@ export async function verifyApplePurchase(req: AuthenticatedRequest, res: Respon
       throw new AppleReceiptError("Unsupported Apple subscription product.", "apple_product_mismatch");
     }
 
-    const verified = await verifyAppleReceipt(body.receipt, body.productId);
+    const verified = body.signedTransactionInfo
+      ? await verifyAppleTransaction(body.signedTransactionInfo, body.productId)
+      : await verifyAppleReceipt(body.receipt!, body.productId);
     if (verified.productId !== body.productId) {
       throw new AppleReceiptError("Purchase does not match the selected iOS plan.", "apple_product_mismatch");
     }
@@ -97,7 +108,11 @@ export async function verifyApplePurchase(req: AuthenticatedRequest, res: Respon
       );
     }
 
-    await saveVerifiedAppleSubscription(req.userId!, body.receipt, verified);
+    await saveVerifiedAppleSubscription(
+      req.userId!,
+      body.receipt || body.signedTransactionInfo!,
+      verified,
+    );
     res.json({
       success: true,
       subscriptionActive: verified.active,
@@ -128,8 +143,14 @@ export async function restoreApplePurchase(req: AuthenticatedRequest, res: Respo
         APPLE_PRODUCT_ID,
       ]),
     ];
-    const verified = await verifyAppleReceipt(body.receipt, productIds);
-    await saveVerifiedAppleSubscription(req.userId!, body.receipt, verified);
+    const verified = body.signedTransactionInfo
+      ? await verifyAppleTransaction(body.signedTransactionInfo, productIds)
+      : await verifyAppleReceipt(body.receipt!, productIds);
+    await saveVerifiedAppleSubscription(
+      req.userId!,
+      body.receipt || body.signedTransactionInfo!,
+      verified,
+    );
 
     res.json({
       success: true,
