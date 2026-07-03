@@ -18,6 +18,7 @@ function mapPlan(plan: any) {
   const strikeOutAmount = Number(plan.strikeOutAmount ?? plan.stikeOutAmount ?? plan.strikeoutAmount ?? plan.originalPrice ?? plan.mrp ?? 0);
   return {
     id: plan.planId,
+    platform: plan.platform || "android",
     name: plan.name,
     price: Number(plan.price || 0),
     strikeOutAmount: Number.isFinite(strikeOutAmount) && strikeOutAmount > 0 ? strikeOutAmount : 0,
@@ -38,7 +39,10 @@ async function getSubscriptionPlan(planId: string) {
   if (!normalizedPlanId) {
     throw new Error("Plan id is required");
   }
-  const plan = await SubscriptionPlan.findOne({ planId: normalizedPlanId });
+  const plan = await SubscriptionPlan.findOne({
+    planId: normalizedPlanId,
+    $or: [{ platform: "android" }, { platform: { $exists: false } }],
+  });
   if (!plan) {
     throw new Error("Plan not found");
   }
@@ -266,9 +270,17 @@ async function resolveCoupon(plan: any, couponCode?: string) {
   };
 }
 
-router.get("/plans", async (_req, res) => {
+router.get("/plans", async (req, res) => {
+  const platform = String(req.query.platform || "").toLowerCase() === "ios" ? "ios" : "android";
+  const platformFilter =
+    platform === "ios"
+      ? { platform: "ios" }
+      : { $or: [{ platform: "android" }, { platform: { $exists: false } }] };
   const plans = await SubscriptionPlan.find({
-    $or: [{ status: "active" }, { active: true, status: { $exists: false } }, { active: true }],
+    $and: [
+      platformFilter,
+      { $or: [{ status: "active" }, { active: true, status: { $exists: false } }, { active: true }] },
+    ],
   }).sort({ sortOrder: 1, durationMonths: 1, createdAt: 1 });
   res.json(plans.map(mapPlan).filter(Boolean));
 });
