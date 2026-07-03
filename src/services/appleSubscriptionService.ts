@@ -7,6 +7,7 @@ import {
   type IUserSubscription,
 } from "@api/db";
 import { logger } from "../lib/logger";
+import { generateInvoiceForSubscription } from "../lib/invoices";
 import { APPLE_PRODUCT_ID, type VerifiedAppleReceipt } from "./appleReceiptService";
 
 export const APPLE_PREMIUM_PLAN = "Premium Plan – 6 Months";
@@ -23,6 +24,10 @@ export async function syncUserPremiumEntitlement(userId: string) {
     }).sort({ expiryDate: -1 }),
     Subscription.findOne({
       userId,
+      $and: [
+        { $or: [{ platform: "android" }, { platform: { $exists: false } }] },
+        { $or: [{ paymentProvider: "razorpay" }, { paymentProvider: { $exists: false } }] },
+      ],
       status: "active",
       $or: [{ endDate: { $exists: false } }, { endDate: null }, { endDate: { $gt: now } }],
     }).sort({ endDate: -1, createdAt: -1 }),
@@ -147,6 +152,117 @@ export async function saveVerifiedAppleSubscription(
   return subscription;
 }
 
+export async function fulfillVerifiedApplePurchase(
+  userId: string,
+  receiptData: string,
+  receipt: VerifiedAppleReceipt,
+) {
+  const appleSubscription = await saveVerifiedAppleSubscription(userId, receiptData, receipt);
+  if (!receipt.active) {
+    return { appleSubscription, purchase: null, invoice: null };
+  }
+
+  const plan = await SubscriptionPlan.findOne({
+    platform: "ios",
+    $or: [
+      { billingProductId: receipt.productId },
+      ...(receipt.productId === APPLE_PRODUCT_ID
+        ? [{ billingProductId: { $exists: false } }, { billingProductId: "" }]
+        : []),
+    ],
+  });
+  if (!plan) {
+    throw new Error(`No iOS subscription plan is configured for ${receipt.productId}.`);
+  }
+
+  const amount = Number(plan.price || 0);
+  const purchase = await Subscription.findOneAndUpdate(
+    { appleTransactionId: receipt.transactionId },
+    {
+      $set: {
+        userId,
+        planId: plan.planId,
+        platform: "ios",
+        paymentProvider: "apple",
+        appleProductId: receipt.productId,
+        appleTransactionId: receipt.transactionId,
+        appleOriginalTransactionId: receipt.originalTransactionId,
+        appleEnvironment: receipt.environment,
+        baseAmount: amount,
+        discountAmount: 0,
+        taxPercent: 0,
+        taxAmount: 0,
+        amountBeforeCharges: amount,
+        convenienceChargePercent: 0,
+        convenienceCharge: 0,
+        convenienceChargeGstPercent: 0,
+        convenienceChargeGst: 0,
+        finalAmount: amount,
+        currency: "INR",
+        amount,
+        paymentStatus: "PAID",
+        status: "active",
+        transactionDate: receipt.purchaseDate,
+        startDate: receipt.purchaseDate,
+        endDate: receipt.expiryDate,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+
+  await User.findByIdAndUpdate(userId, {
+    $set: {
+      isPremium: true,
+      premiumPlan: plan.name,
+      premiumExpiry: receipt.expiryDate,
+      premiumExpiresAt: receipt.expiryDate,
+      paymentPlatform: "ios",
+      lastPurchase: {
+        subscriptionId: String(purchase._id),
+        planId: plan.planId,
+        planAmount: amount,
+        discountAmount: 0,
+        taxAmount: 0,
+        convenienceCharge: 0,
+        convenienceChargeGst: 0,
+        finalAmount: amount,
+        currency: "INR",
+        appleProductId: receipt.productId,
+        appleTransactionId: receipt.transactionId,
+        appleOriginalTransactionId: receipt.originalTransactionId,
+        paymentStatus: "PAID",
+        transactionDate: receipt.purchaseDate,
+      },
+    },
+  });
+
+  let invoice = null;
+  try {
+    invoice = await generateInvoiceForSubscription(String(purchase._id));
+    logger.info(
+      {
+        userId,
+        subscriptionId: String(purchase._id),
+        transactionId: receipt.transactionId,
+        invoiceNumber: invoice.invoiceNumber,
+        emailStatus: invoice.emailStatus,
+      },
+      "Apple purchase fulfilled",
+    );
+  } catch (error) {
+    logger.error(
+      {
+        err: error,
+        userId,
+        subscriptionId: String(purchase._id),
+        transactionId: receipt.transactionId,
+      },
+      "Apple purchase activated but automatic invoice generation failed",
+    );
+  }
+  return { appleSubscription, purchase, invoice };
+}
+
 export async function updateSubscriptionFromWebhook(params: {
   userId?: string;
   originalTransactionId: string;
@@ -204,6 +320,15 @@ export async function updateSubscriptionFromWebhook(params: {
       environment: params.environment,
       latestWebhookEvent: params.latestWebhookEvent,
     });
+    await Subscription.updateMany(
+      { paymentProvider: "apple", appleOriginalTransactionId: params.originalTransactionId },
+      {
+        $set: {
+          status: params.status === "active" || params.status === "cancelled" ? "active" : params.status,
+          ...(params.expiryDate ? { endDate: params.expiryDate } : {}),
+        },
+      },
+    );
     await syncUserPremiumEntitlement(params.userId);
     logger.info(
       {
@@ -230,6 +355,19 @@ export async function updateSubscriptionFromWebhook(params: {
   if (params.environment) subscription.environment = params.environment;
   subscription.latestWebhookEvent = params.latestWebhookEvent;
   await subscription.save();
+  await Subscription.updateMany(
+    { paymentProvider: "apple", appleOriginalTransactionId: params.originalTransactionId },
+    {
+      $set: {
+        status:
+          subscription.subscriptionStatus === "active" ||
+          subscription.subscriptionStatus === "cancelled"
+            ? "active"
+            : subscription.subscriptionStatus,
+        endDate: subscription.expiryDate,
+      },
+    },
+  );
   await syncUserPremiumEntitlement(subscription.userId);
 
   logger.info(

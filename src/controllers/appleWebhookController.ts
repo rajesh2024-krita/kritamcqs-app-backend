@@ -2,7 +2,10 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import { APPLE_PRODUCT_ID } from "../services/appleReceiptService";
 import { verifyAppleNotification } from "../services/appleNotificationService";
-import { updateSubscriptionFromWebhook } from "../services/appleSubscriptionService";
+import {
+  fulfillVerifiedApplePurchase,
+  updateSubscriptionFromWebhook,
+} from "../services/appleSubscriptionService";
 import { SubscriptionPlan, User, type AppleSubscriptionStatus } from "@api/db";
 
 const webhookSchema = z.object({
@@ -104,6 +107,31 @@ export async function handleAppleWebhook(req: Request, res: Response) {
         { originalTransactionId, eventType },
         "Apple webhook has no locally linked subscription; awaiting receipt verification",
       );
+    } else if (
+      (eventType === "SUBSCRIBED" || eventType === "DID_RENEW") &&
+      transaction?.transactionId &&
+      transaction.productId &&
+      transaction.purchaseDate &&
+      transaction.expiresDate
+    ) {
+      await fulfillVerifiedApplePurchase(String(updated.userId), signedPayload, {
+        productId: transaction.productId,
+        transactionId: transaction.transactionId,
+        originalTransactionId,
+        purchaseDate: new Date(transaction.purchaseDate),
+        expiryDate: new Date(transaction.expiresDate),
+        active: true,
+        refunded: false,
+        autoRenewStatus:
+          renewal?.autoRenewStatus === undefined ? true : renewal.autoRenewStatus === 1,
+        billingRetry: false,
+        environment,
+      }).catch((error) => {
+        req.log.error(
+          { err: error, originalTransactionId, transactionId: transaction.transactionId },
+          "Apple renewal was recorded but invoice fulfillment failed",
+        );
+      });
     }
     res.status(200).json({ success: true });
   } catch (error) {

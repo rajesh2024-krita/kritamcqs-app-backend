@@ -947,7 +947,12 @@ export async function regenerateInvoicePdf(invoice: any, settings?: any, extras:
 
 export async function generateInvoiceForSubscription(subscriptionId: string) {
   const existing = await Invoice.findOne({ subscriptionId });
-  if (existing) return existing;
+  if (existing) {
+    if (existing.emailStatus !== "sent") {
+      await sendInvoiceEmail(existing);
+    }
+    return existing;
+  }
 
   const [subscription, settings] = await Promise.all([Subscription.findById(subscriptionId), getInvoiceSettings()]);
   if (!subscription || subscription.status !== "active") throw new Error("Active subscription not found for invoice");
@@ -1003,7 +1008,7 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
     },
     templateId: template?.id || settings.connectedTemplateId || settings.activeTemplateId || "",
     templateName: template?.name || settings.connectedTemplateName || settings.activeTemplateName || "",
-    transactionId: subscription.razorpayPaymentId || subscription.razorpayOrderId || "",
+    transactionId: subscription.razorpayPaymentId || subscription.appleTransactionId || subscription.razorpayOrderId || "",
     invoiceDate: new Date(),
     dueDate: subscription.endDate,
     items: [{
@@ -1020,11 +1025,13 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
     paymentHistory: [{
       status: "paid",
       amount: grandTotal,
-      transactionId: subscription.razorpayPaymentId || subscription.razorpayOrderId || "",
+      transactionId: subscription.razorpayPaymentId || subscription.appleTransactionId || subscription.razorpayOrderId || "",
       paidAt: subscription.transactionDate || new Date(),
       note: "Subscription payment received",
+      paymentProvider: subscription.paymentProvider || (subscription.appleTransactionId ? "apple" : "razorpay"),
       razorpayOrderId: subscription.razorpayOrderId || "",
       razorpayPaymentId: subscription.razorpayPaymentId || "",
+      appleTransactionId: subscription.appleTransactionId || "",
       convenienceCharge,
       convenienceChargeGst,
     }],
@@ -1036,9 +1043,21 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
   const pdf = await regenerateInvoicePdf(invoice, settings, { userMobile: user?.mobile || "", planName: plan?.name }, { requireConnectedTemplate: true });
   await invoice.save();
 
-  if (settings.emailEnabled && invoice.userEmail) {
+  await sendInvoiceEmail(invoice, settings, pdf);
+  return invoice;
+}
+
+export async function sendInvoiceEmail(invoice: any, providedSettings?: any, providedPdf?: Buffer) {
+  const settings = providedSettings || await getInvoiceSettings();
+  if (settings.emailEnabled !== false && invoice.userEmail) {
     try {
-      await sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.INVOICE_GENERATED, invoice.userEmail, {
+      const pdf = providedPdf || await regenerateInvoicePdf(
+        invoice,
+        settings,
+        {},
+        { requireConnectedTemplate: true },
+      );
+      const result = await sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.INVOICE_GENERATED, invoice.userEmail, {
         user_name: invoice.userName || "Learner",
         customer_name: invoice.userName || "Learner",
         email: invoice.userEmail || "",
@@ -1056,13 +1075,29 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
         support_email: settings.companyEmail || settings.smtp?.fromEmail || "support@krita.com",
       }, [{ filename: `${invoice.invoiceNumber}.pdf`, contentType: "application/pdf", content: pdf }]);
 
-      invoice.emailStatus = "sent";
-      invoice.sentAt = new Date();
+      invoice.emailStatus = result.skipped ? "skipped" : "sent";
+      invoice.emailError = result.skipped ? result.reason || "Email skipped" : "";
+      invoice.sentAt = result.skipped ? undefined : new Date();
+      invoice.activityLogs = [
+        ...(invoice.activityLogs || []),
+        {
+          action: "email",
+          message: result.skipped ? `Invoice email skipped: ${invoice.emailError}` : "Invoice email sent automatically",
+          at: new Date(),
+        },
+      ];
       await invoice.save();
-      logger.info({ invoiceNumber: invoice.invoiceNumber, to: invoice.userEmail, emailStatus: invoice.emailStatus }, "Invoice email processed");
+      logger.info(
+        { invoiceNumber: invoice.invoiceNumber, to: invoice.userEmail, emailStatus: invoice.emailStatus },
+        "Invoice email processed",
+      );
     } catch (error) {
       invoice.emailStatus = "failed";
       invoice.emailError = error instanceof Error ? error.message : "Email failed";
+      invoice.activityLogs = [
+        ...(invoice.activityLogs || []),
+        { action: "email", message: `Automatic invoice email failed: ${invoice.emailError}`, at: new Date() },
+      ];
       await invoice.save();
       logger.warn({ err: error, invoiceNumber: invoice.invoiceNumber }, "Invoice email failed");
     }
@@ -1072,7 +1107,6 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
     await invoice.save();
     logger.info({ invoiceNumber: invoice.invoiceNumber, reason: invoice.emailError }, "Invoice email skipped");
   }
-
   return invoice;
 }
 

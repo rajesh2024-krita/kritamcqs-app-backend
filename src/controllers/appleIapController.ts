@@ -10,7 +10,7 @@ import {
 } from "../services/appleReceiptService";
 import { verifyAppleTransaction } from "../services/appleNotificationService";
 import {
-  saveVerifiedAppleSubscription,
+  fulfillVerifiedApplePurchase,
   SubscriptionOwnershipError,
 } from "../services/appleSubscriptionService";
 
@@ -108,7 +108,7 @@ export async function verifyApplePurchase(req: AuthenticatedRequest, res: Respon
       );
     }
 
-    await saveVerifiedAppleSubscription(
+    const fulfillment = await fulfillVerifiedApplePurchase(
       req.userId!,
       body.receipt || body.signedTransactionInfo!,
       verified,
@@ -120,6 +120,13 @@ export async function verifyApplePurchase(req: AuthenticatedRequest, res: Respon
       planId: plan.planId,
       planName: plan.name,
       productId: verified.productId,
+      invoice: fulfillment.invoice
+        ? {
+            id: String(fulfillment.invoice._id),
+            invoiceNumber: fulfillment.invoice.invoiceNumber,
+            emailStatus: fulfillment.invoice.emailStatus,
+          }
+        : null,
     });
   } catch (error) {
     req.log.warn(
@@ -146,7 +153,7 @@ export async function restoreApplePurchase(req: AuthenticatedRequest, res: Respo
     const verified = body.signedTransactionInfo
       ? await verifyAppleTransaction(body.signedTransactionInfo, productIds)
       : await verifyAppleReceipt(body.receipt!, productIds);
-    await saveVerifiedAppleSubscription(
+    const fulfillment = await fulfillVerifiedApplePurchase(
       req.userId!,
       body.receipt || body.signedTransactionInfo!,
       verified,
@@ -158,6 +165,13 @@ export async function restoreApplePurchase(req: AuthenticatedRequest, res: Respo
       expiresAt: verified.expiryDate,
       productId: verified.productId,
       originalTransactionId: verified.originalTransactionId,
+      invoice: fulfillment.invoice
+        ? {
+            id: String(fulfillment.invoice._id),
+            invoiceNumber: fulfillment.invoice.invoiceNumber,
+            emailStatus: fulfillment.invoice.emailStatus,
+          }
+        : null,
     });
   } catch (error) {
     req.log.warn({ err: error, userId: req.userId }, "Apple purchase restore failed");

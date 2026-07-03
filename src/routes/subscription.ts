@@ -735,7 +735,7 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
     try {
       const invoiceSettings = await getInvoiceSettings();
       const user = await User.findById(req.userId);
-      if (invoiceSettings.emailEnabled && user?.email) {
+      if (invoiceSettings.emailEnabled !== false && user?.email) {
         await sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.PAYMENT_SUCCESS, user.email, {
           user_name: user.name || user.email || "Learner",
           payment_amount: `${pricing.currency || "INR"} ${Number(pricing.finalAmount || 0).toFixed(2)}`,

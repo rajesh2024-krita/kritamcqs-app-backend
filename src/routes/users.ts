@@ -112,6 +112,8 @@ function userResponse(user: any) {
     requiresProfileCompletion: u.requiresProfileCompletion,
     isPremium: u.isPremium,
     premiumExpiresAt: u.premiumExpiresAt,
+    premiumPlan: u.premiumPlan,
+    paymentPlatform: u.paymentPlatform,
     createdAt: u.createdAt,
     isAdmin: u.isAdmin,
     migratedFromOldApp: u.migratedFromOldApp,

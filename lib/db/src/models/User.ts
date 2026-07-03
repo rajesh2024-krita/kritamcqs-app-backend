@@ -49,6 +49,9 @@ export interface IUser extends Document {
     currency?: string;
     razorpayOrderId?: string;
     razorpayPaymentId?: string;
+    appleProductId?: string;
+    appleTransactionId?: string;
+    appleOriginalTransactionId?: string;
     paymentStatus?: string;
     transactionDate?: Date;
   };
@@ -107,6 +110,9 @@ const UserSchema = new Schema<IUser>(
       currency: String,
       razorpayOrderId: String,
       razorpayPaymentId: String,
+      appleProductId: String,
+      appleTransactionId: String,
+      appleOriginalTransactionId: String,
       paymentStatus: String,
       transactionDate: Date,
     },
