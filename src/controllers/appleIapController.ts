@@ -140,7 +140,7 @@ export async function restoreApplePurchase(req: AuthenticatedRequest, res: Respo
     const productIds = [
       ...new Set([
         ...configuredPlans.map((plan) => String(plan.billingProductId || "")).filter(Boolean),
-        APPLE_PRODUCT_ID,
+        ...(APPLE_PRODUCT_ID ? [APPLE_PRODUCT_ID] : []),
       ]),
     ];
     const verified = body.signedTransactionInfo

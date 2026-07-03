@@ -4,8 +4,7 @@ const PRODUCTION_VERIFY_URL = "https://buy.itunes.apple.com/verifyReceipt";
 const SANDBOX_VERIFY_URL = "https://sandbox.itunes.apple.com/verifyReceipt";
 
 export const APPLE_BUNDLE_ID = process.env["APPLE_BUNDLE_ID"] || "app.kritamcqs.iosapp";
-export const APPLE_PRODUCT_ID =
-  process.env["APPLE_PREMIUM_PRODUCT_ID"] || "app.kritamcqs.iosapp.premium.6months";
+export const APPLE_PRODUCT_ID = process.env["APPLE_PREMIUM_PRODUCT_ID"] || "";
 
 type AppleReceiptTransaction = {
   product_id?: string;

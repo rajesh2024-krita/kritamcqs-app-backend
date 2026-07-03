@@ -12,17 +12,25 @@ import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates"
 const router: IRouter = Router();
 const RENEWAL_WINDOW_DAYS = 5;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const LEGACY_APPLE_PRODUCT_ID =
-  process.env["APPLE_PREMIUM_PRODUCT_ID"] || "app.kritamcqs.iosapp.premium.6months";
 
 function mapPlan(plan: any) {
   if (!plan) return null;
   const strikeOutAmount = Number(plan.strikeOutAmount ?? plan.stikeOutAmount ?? plan.strikeoutAmount ?? plan.originalPrice ?? plan.mrp ?? 0);
+  const productId = String(
+    plan.billingProductId ??
+    plan.productId ??
+    plan.iosProductId ??
+    plan.appleProductId ??
+    plan.storeProductId ??
+    plan.identifier ??
+    "",
+  ).trim();
   return {
     id: plan.planId,
+    planId: plan.planId,
     platform: plan.platform || "android",
-    billingProductId:
-      plan.billingProductId || (plan.platform === "ios" ? LEGACY_APPLE_PRODUCT_ID : ""),
+    productId,
+    billingProductId: productId,
     name: plan.name,
     price: Number(plan.price || 0),
     strikeOutAmount: Number.isFinite(strikeOutAmount) && strikeOutAmount > 0 ? strikeOutAmount : 0,
@@ -286,7 +294,39 @@ router.get("/plans", async (req, res) => {
       { $or: [{ status: "active" }, { active: true, status: { $exists: false } }, { active: true }] },
     ],
   }).sort({ sortOrder: 1, durationMonths: 1, createdAt: 1 });
-  res.json(plans.map(mapPlan).filter(Boolean));
+  const allMappedPlans = plans.map(mapPlan).filter(Boolean);
+  const invalidIosPlans = allMappedPlans.filter(
+    (plan) => plan.platform === "ios" && !plan.productId,
+  );
+  if (invalidIosPlans.length) {
+    req.log.error(
+      {
+        plans: invalidIosPlans.map((plan) => ({
+          planId: plan.planId,
+          platform: plan.platform,
+          productId: null,
+          name: plan.name,
+        })),
+      },
+      "Ignoring iOS subscription plans with missing App Store Product IDs",
+    );
+  }
+  const mappedPlans = allMappedPlans.filter(
+    (plan) => plan.platform !== "ios" || Boolean(plan.productId),
+  );
+  req.log.info(
+    {
+      requestedPlatform: platform,
+      plans: mappedPlans.map((plan) => ({
+        planId: plan.planId,
+        platform: plan.platform,
+        productId: plan.productId || null,
+        name: plan.name,
+      })),
+    },
+    "Subscription plans returned for device platform",
+  );
+  res.json(mappedPlans);
 });
 
 router.post("/apply-coupon", requireAuth, async (req: AuthenticatedRequest, res) => {
