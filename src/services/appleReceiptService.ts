@@ -100,8 +100,23 @@ function toDate(value: string | undefined, label: string) {
   return new Date(milliseconds);
 }
 
-export async function verifyAppleReceipt(receipt: string): Promise<VerifiedAppleReceipt> {
+export async function verifyAppleReceipt(
+  receipt: string,
+  expectedProductIds: string | string[] = APPLE_PRODUCT_ID,
+): Promise<VerifiedAppleReceipt> {
   try {
+    const supportedProductIds = new Set(
+      (Array.isArray(expectedProductIds) ? expectedProductIds : [expectedProductIds])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    );
+    if (!supportedProductIds.size) {
+      throw new AppleReceiptError(
+        "No iOS subscription products are configured.",
+        "apple_configuration_error",
+        503,
+      );
+    }
     let result = await requestVerification(PRODUCTION_VERIFY_URL, receipt);
     let environment: "Production" | "Sandbox" = "Production";
 
@@ -128,7 +143,7 @@ export async function verifyAppleReceipt(receipt: string): Promise<VerifiedApple
     const transactions = [
       ...(result.latest_receipt_info || []),
       ...(result.receipt?.in_app || []),
-    ].filter((item) => item.product_id === APPLE_PRODUCT_ID);
+    ].filter((item) => item.product_id && supportedProductIds.has(item.product_id));
     const latest = transactions.sort(
       (a, b) => Number(b.expires_date_ms || 0) - Number(a.expires_date_ms || 0),
     )[0];
@@ -142,11 +157,12 @@ export async function verifyAppleReceipt(receipt: string): Promise<VerifiedApple
 
     const purchaseDate = toDate(latest.purchase_date_ms, "purchase date");
     const expiryDate = toDate(latest.expires_date_ms, "expiry date");
+    const verifiedProductId = latest.product_id!;
     const renewal = (result.pending_renewal_info || []).find(
       (item) =>
         item.original_transaction_id === latest.original_transaction_id ||
-        item.product_id === APPLE_PRODUCT_ID ||
-        item.auto_renew_product_id === APPLE_PRODUCT_ID,
+        item.product_id === verifiedProductId ||
+        item.auto_renew_product_id === verifiedProductId,
     );
     const refunded = Boolean(latest.cancellation_date_ms);
     const graceExpiryMilliseconds = Number(renewal?.grace_period_expires_date_ms || 0);
@@ -156,7 +172,7 @@ export async function verifyAppleReceipt(receipt: string): Promise<VerifiedApple
         ? new Date(graceExpiryMilliseconds)
         : expiryDate;
     const verified: VerifiedAppleReceipt = {
-      productId: latest.product_id || APPLE_PRODUCT_ID,
+      productId: verifiedProductId,
       transactionId: latest.transaction_id,
       originalTransactionId: latest.original_transaction_id,
       purchaseDate,

@@ -12,6 +12,8 @@ import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates"
 const router: IRouter = Router();
 const RENEWAL_WINDOW_DAYS = 5;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const LEGACY_APPLE_PRODUCT_ID =
+  process.env["APPLE_PREMIUM_PRODUCT_ID"] || "app.kritamcqs.iosapp.premium.6months";
 
 function mapPlan(plan: any) {
   if (!plan) return null;
@@ -19,6 +21,8 @@ function mapPlan(plan: any) {
   return {
     id: plan.planId,
     platform: plan.platform || "android",
+    billingProductId:
+      plan.billingProductId || (plan.platform === "ios" ? LEGACY_APPLE_PRODUCT_ID : ""),
     name: plan.name,
     price: Number(plan.price || 0),
     strikeOutAmount: Number.isFinite(strikeOutAmount) && strikeOutAmount > 0 ? strikeOutAmount : 0,

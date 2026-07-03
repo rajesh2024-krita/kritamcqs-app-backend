@@ -1,12 +1,13 @@
 import {
   Subscription,
+  SubscriptionPlan,
   User,
   UserSubscription,
   type AppleSubscriptionStatus,
   type IUserSubscription,
 } from "@api/db";
 import { logger } from "../lib/logger";
-import type { VerifiedAppleReceipt } from "./appleReceiptService";
+import { APPLE_PRODUCT_ID, type VerifiedAppleReceipt } from "./appleReceiptService";
 
 export const APPLE_PREMIUM_PLAN = "Premium Plan – 6 Months";
 
@@ -28,10 +29,25 @@ export async function syncUserPremiumEntitlement(userId: string) {
   ]);
 
   if (appleEntitlement) {
+    const productFilters: Record<string, unknown>[] = [
+      { billingProductId: appleEntitlement.productId, platform: "ios" },
+    ];
+    if (appleEntitlement.productId === APPLE_PRODUCT_ID) {
+      productFilters.push(
+        { platform: "ios", billingProductId: { $exists: false } },
+        { platform: "ios", billingProductId: "" },
+      );
+    }
+    const configuredPlan = await SubscriptionPlan.findOne({
+      $or: [
+        ...(appleEntitlement.planId ? [{ planId: appleEntitlement.planId, platform: "ios" }] : []),
+        ...productFilters,
+      ],
+    }).select("planId name");
     await User.findByIdAndUpdate(userId, {
       $set: {
         isPremium: true,
-        premiumPlan: APPLE_PREMIUM_PLAN,
+        premiumPlan: configuredPlan?.name || APPLE_PREMIUM_PLAN,
         premiumExpiry: appleEntitlement.expiryDate,
         premiumExpiresAt: appleEntitlement.expiryDate,
         paymentPlatform: "ios",
@@ -88,12 +104,21 @@ export async function saveVerifiedAppleSubscription(
       "This App Store subscription is already linked to another account.",
     );
   }
+  const receiptProductFilters: Record<string, unknown>[] = [{ billingProductId: receipt.productId }];
+  if (receipt.productId === APPLE_PRODUCT_ID) {
+    receiptProductFilters.push({ billingProductId: { $exists: false } }, { billingProductId: "" });
+  }
+  const configuredPlan = await SubscriptionPlan.findOne({
+    platform: "ios",
+    $or: receiptProductFilters,
+  }).select("planId");
 
   const subscription = await UserSubscription.findOneAndUpdate(
     { originalTransactionId: receipt.originalTransactionId },
     {
       $set: {
         userId,
+        planId: configuredPlan?.planId,
         productId: receipt.productId,
         transactionId: receipt.transactionId,
         receiptData,
@@ -139,6 +164,18 @@ export async function updateSubscriptionFromWebhook(params: {
     signedDate?: Date;
   };
 }) {
+  const webhookProductFilters: Record<string, unknown>[] = params.productId
+    ? [{ billingProductId: params.productId }]
+    : [];
+  if (params.productId === APPLE_PRODUCT_ID) {
+    webhookProductFilters.push({ billingProductId: { $exists: false } }, { billingProductId: "" });
+  }
+  const configuredPlan = params.productId
+    ? await SubscriptionPlan.findOne({
+        platform: "ios",
+        $or: webhookProductFilters,
+      }).select("planId")
+    : null;
   const subscription = await UserSubscription.findOne({
     originalTransactionId: params.originalTransactionId,
   });
@@ -157,6 +194,7 @@ export async function updateSubscriptionFromWebhook(params: {
       userId: params.userId,
       originalTransactionId: params.originalTransactionId,
       transactionId: params.transactionId,
+      planId: configuredPlan?.planId,
       productId: params.productId,
       purchaseDate: params.purchaseDate,
       expiryDate: params.expiryDate,
@@ -179,7 +217,10 @@ export async function updateSubscriptionFromWebhook(params: {
   }
 
   if (params.transactionId) subscription.transactionId = params.transactionId;
-  if (params.productId) subscription.productId = params.productId;
+  if (params.productId) {
+    subscription.productId = params.productId;
+    subscription.planId = configuredPlan?.planId;
+  }
   if (params.purchaseDate) subscription.purchaseDate = params.purchaseDate;
   if (params.expiryDate) subscription.expiryDate = params.expiryDate;
   if (params.status) subscription.subscriptionStatus = params.status;

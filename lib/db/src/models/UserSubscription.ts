@@ -4,6 +4,7 @@ export type AppleSubscriptionStatus = "active" | "expired" | "cancelled" | "fail
 
 export interface IUserSubscription extends Document {
   userId: string;
+  planId?: string;
   productId: string;
   transactionId: string;
   originalTransactionId: string;
@@ -27,6 +28,7 @@ export interface IUserSubscription extends Document {
 const UserSubscriptionSchema = new Schema<IUserSubscription>(
   {
     userId: { type: String, required: true, index: true },
+    planId: { type: String, trim: true, index: true },
     productId: { type: String, required: true, index: true },
     transactionId: { type: String, required: true, index: true },
     // This is the stable key across the initial purchase and every renewal.

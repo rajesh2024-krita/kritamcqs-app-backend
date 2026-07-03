@@ -1,7 +1,7 @@
 import type { Response } from "express";
 import crypto from "node:crypto";
 import { z } from "zod";
-import { User } from "@api/db";
+import { SubscriptionPlan, User } from "@api/db";
 import type { AuthenticatedRequest } from "../middlewares/auth";
 import {
   AppleReceiptError,
@@ -14,6 +14,7 @@ import {
 } from "../services/appleSubscriptionService";
 
 const verifySchema = z.object({
+  planId: z.string().min(1),
   productId: z.string().min(1),
   transactionId: z.string().min(1),
   originalTransactionId: z.string().min(1),
@@ -61,11 +62,24 @@ function respondWithError(res: Response, error: unknown) {
 export async function verifyApplePurchase(req: AuthenticatedRequest, res: Response) {
   try {
     const body = verifySchema.parse(req.body);
-    if (body.productId !== APPLE_PRODUCT_ID) {
+    const productFilters: Record<string, unknown>[] = [{ billingProductId: body.productId }];
+    if (body.productId === APPLE_PRODUCT_ID) {
+      productFilters.push({ billingProductId: { $exists: false } }, { billingProductId: "" });
+    }
+    const plan = await SubscriptionPlan.findOne({
+      planId: body.planId,
+      platform: "ios",
+      $and: [{ $or: productFilters }],
+      $or: [{ status: "active" }, { active: true }],
+    });
+    if (!plan) {
       throw new AppleReceiptError("Unsupported Apple subscription product.", "apple_product_mismatch");
     }
 
-    const verified = await verifyAppleReceipt(body.receipt);
+    const verified = await verifyAppleReceipt(body.receipt, body.productId);
+    if (verified.productId !== body.productId) {
+      throw new AppleReceiptError("Purchase does not match the selected iOS plan.", "apple_product_mismatch");
+    }
     if (verified.originalTransactionId !== body.originalTransactionId) {
       throw new AppleReceiptError(
         "Purchase does not match the verified App Store receipt.",
@@ -88,6 +102,9 @@ export async function verifyApplePurchase(req: AuthenticatedRequest, res: Respon
       success: true,
       subscriptionActive: verified.active,
       expiresAt: verified.expiryDate,
+      planId: plan.planId,
+      planName: plan.name,
+      productId: verified.productId,
     });
   } catch (error) {
     req.log.warn(
@@ -101,7 +118,17 @@ export async function verifyApplePurchase(req: AuthenticatedRequest, res: Respon
 export async function restoreApplePurchase(req: AuthenticatedRequest, res: Response) {
   try {
     const body = restoreSchema.parse(req.body);
-    const verified = await verifyAppleReceipt(body.receipt);
+    const configuredPlans = await SubscriptionPlan.find({
+      platform: "ios",
+      billingProductId: { $exists: true, $ne: "" },
+    }).select("billingProductId");
+    const productIds = [
+      ...new Set([
+        ...configuredPlans.map((plan) => String(plan.billingProductId || "")).filter(Boolean),
+        APPLE_PRODUCT_ID,
+      ]),
+    ];
+    const verified = await verifyAppleReceipt(body.receipt, productIds);
     await saveVerifiedAppleSubscription(req.userId!, body.receipt, verified);
 
     res.json({

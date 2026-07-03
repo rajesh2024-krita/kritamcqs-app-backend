@@ -3,7 +3,7 @@ import { z } from "zod";
 import { APPLE_PRODUCT_ID } from "../services/appleReceiptService";
 import { verifyAppleNotification } from "../services/appleNotificationService";
 import { updateSubscriptionFromWebhook } from "../services/appleSubscriptionService";
-import { User, type AppleSubscriptionStatus } from "@api/db";
+import { SubscriptionPlan, User, type AppleSubscriptionStatus } from "@api/db";
 
 const webhookSchema = z.object({
   signedPayload: z.string().min(20).max(10_000_000),
@@ -46,8 +46,14 @@ export async function handleAppleWebhook(req: Request, res: Response) {
       throw new Error("Verified Apple notification is missing originalTransactionId.");
     }
     if (transaction?.productId && transaction.productId !== APPLE_PRODUCT_ID) {
-      res.status(200).json({ success: true, ignored: true });
-      return;
+      const configuredPlan = await SubscriptionPlan.exists({
+        platform: "ios",
+        billingProductId: transaction.productId,
+      });
+      if (!configuredPlan) {
+        res.status(200).json({ success: true, ignored: true });
+        return;
+      }
     }
 
     let status: AppleSubscriptionStatus | undefined;
