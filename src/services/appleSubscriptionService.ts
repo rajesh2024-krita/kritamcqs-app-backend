@@ -97,7 +97,7 @@ function statusFromReceipt(receipt: VerifiedAppleReceipt): AppleSubscriptionStat
 
 export async function saveVerifiedAppleSubscription(
   userId: string,
-  receiptData: string,
+  receiptData: string | undefined,
   receipt: VerifiedAppleReceipt,
 ): Promise<IUserSubscription> {
   const existing = await UserSubscription.findOne({
@@ -126,13 +126,21 @@ export async function saveVerifiedAppleSubscription(
         planId: configuredPlan?.planId,
         productId: receipt.productId,
         transactionId: receipt.transactionId,
-        receiptData,
+        ...(receiptData ? { receiptData } : {}),
         purchaseDate: receipt.purchaseDate,
         expiryDate: receipt.expiryDate,
         subscriptionStatus: statusFromReceipt(receipt),
         autoRenewStatus: receipt.autoRenewStatus,
         platform: "ios",
         environment: receipt.environment,
+        ...(receipt.active
+          ? {
+              retryPending: false,
+              retryCount: 0,
+              nextRetryAt: null,
+              lastVerificationAt: new Date(),
+            }
+          : {}),
       },
     },
     { upsert: true, new: true, setDefaultsOnInsert: true },
@@ -154,7 +162,7 @@ export async function saveVerifiedAppleSubscription(
 
 export async function fulfillVerifiedApplePurchase(
   userId: string,
-  receiptData: string,
+  receiptData: string | undefined,
   receipt: VerifiedAppleReceipt,
 ) {
   const appleSubscription = await saveVerifiedAppleSubscription(userId, receiptData, receipt);
@@ -175,7 +183,8 @@ export async function fulfillVerifiedApplePurchase(
     throw new Error(`No iOS subscription plan is configured for ${receipt.productId}.`);
   }
 
-  const amount = Number(plan.price || 0);
+  const amount = Number(receipt.amount ?? plan.price ?? 0);
+  const currency = receipt.currency || "INR";
   const purchase = await Subscription.findOneAndUpdate(
     { appleTransactionId: receipt.transactionId },
     {
@@ -198,7 +207,7 @@ export async function fulfillVerifiedApplePurchase(
         convenienceChargeGstPercent: 0,
         convenienceChargeGst: 0,
         finalAmount: amount,
-        currency: "INR",
+        currency,
         amount,
         paymentStatus: "PAID",
         status: "active",
@@ -226,7 +235,7 @@ export async function fulfillVerifiedApplePurchase(
         convenienceCharge: 0,
         convenienceChargeGst: 0,
         finalAmount: amount,
-        currency: "INR",
+        currency,
         appleProductId: receipt.productId,
         appleTransactionId: receipt.transactionId,
         appleOriginalTransactionId: receipt.originalTransactionId,
@@ -319,6 +328,12 @@ export async function updateSubscriptionFromWebhook(params: {
       platform: "ios",
       environment: params.environment,
       latestWebhookEvent: params.latestWebhookEvent,
+      retryPending: params.status === "expired" || params.status === "failed",
+      retryCount: 0,
+      nextRetryAt:
+        params.status === "expired" || params.status === "failed"
+          ? new Date(Date.now() + 24 * 60 * 60 * 1000)
+          : undefined,
     });
     await Subscription.updateMany(
       { paymentProvider: "apple", appleOriginalTransactionId: params.originalTransactionId },
@@ -349,6 +364,15 @@ export async function updateSubscriptionFromWebhook(params: {
   if (params.purchaseDate) subscription.purchaseDate = params.purchaseDate;
   if (params.expiryDate) subscription.expiryDate = params.expiryDate;
   if (params.status) subscription.subscriptionStatus = params.status;
+  if (params.status === "active") {
+    subscription.retryPending = false;
+    subscription.retryCount = 0;
+    subscription.nextRetryAt = undefined;
+  } else if (params.status === "expired" || params.status === "failed") {
+    subscription.retryPending = true;
+    subscription.retryCount = 0;
+    subscription.nextRetryAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  }
   if (typeof params.autoRenewStatus === "boolean") {
     subscription.autoRenewStatus = params.autoRenewStatus;
   }

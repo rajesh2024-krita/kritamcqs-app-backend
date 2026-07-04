@@ -1,16 +1,20 @@
 import type { Response } from "express";
 import crypto from "node:crypto";
 import { z } from "zod";
-import { SubscriptionPlan, User } from "@api/db";
+import { SubscriptionPlan, User, UserSubscription } from "@api/db";
 import type { AuthenticatedRequest } from "../middlewares/auth";
 import {
   AppleReceiptError,
   APPLE_PRODUCT_ID,
   verifyAppleReceipt,
 } from "../services/appleReceiptService";
-import { verifyAppleTransaction } from "../services/appleNotificationService";
+import {
+  getLatestAppleSubscriptionStatus,
+  verifyAppleTransaction,
+} from "../services/appleNotificationService";
 import {
   fulfillVerifiedApplePurchase,
+  saveVerifiedAppleSubscription,
   SubscriptionOwnershipError,
 } from "../services/appleSubscriptionService";
 
@@ -185,6 +189,29 @@ export async function getAppleAppAccountToken(req: AuthenticatedRequest, res: Re
     if (!user) {
       res.status(404).json({ success: false, error: "user_not_found", message: "User not found." });
       return;
+    }
+    const existingSubscription = await UserSubscription.findOne({
+      userId: req.userId,
+      platform: "ios",
+    }).sort({ expiryDate: -1 });
+    if (existingSubscription) {
+      const latest = await getLatestAppleSubscriptionStatus(
+        existingSubscription.originalTransactionId,
+        existingSubscription.productId,
+        existingSubscription.environment || "Production",
+      );
+      if (latest.active) {
+        await fulfillVerifiedApplePurchase(req.userId!, undefined, latest);
+        res.status(409).json({
+          success: false,
+          status: "already_subscribed",
+          error: "already_subscribed",
+          message: "Your App Store subscription is already active.",
+          expiresAt: latest.expiryDate,
+        });
+        return;
+      }
+      await saveVerifiedAppleSubscription(req.userId!, undefined, latest);
     }
     if (!user.appleAppAccountToken) {
       user.appleAppAccountToken = crypto.randomUUID();

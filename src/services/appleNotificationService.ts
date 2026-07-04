@@ -1,8 +1,11 @@
 import { createPrivateKey } from "node:crypto";
 import fs from "node:fs/promises";
 import {
+  AppStoreServerAPIClient,
+  AutoRenewStatus,
   Environment,
   SignedDataVerifier,
+  Status,
   VerificationStatus,
   type JWSRenewalInfoDecodedPayload,
   type JWSTransactionDecodedPayload,
@@ -54,6 +57,7 @@ class AppleSignedDataVerificationError extends Error {
 }
 
 let verifierPromise: Promise<VerifierSet> | undefined;
+const apiClients = new Map<AppleEnvironmentName, AppStoreServerAPIClient>();
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
@@ -184,6 +188,39 @@ async function auditAppStoreServerApiCredentials(): Promise<void> {
   }
 }
 
+async function readServerApiCredentials() {
+  const keyId = stringValue(process.env["APPLE_KEY_ID"]);
+  const issuerId = stringValue(process.env["APPLE_ISSUER_ID"]);
+  const privateKeyPath = stringValue(process.env["APPLE_PRIVATE_KEY_PATH"]);
+  const inlinePrivateKey = stringValue(process.env["APPLE_PRIVATE_KEY"]);
+  if (!keyId || !issuerId || (!privateKeyPath && !inlinePrivateKey)) {
+    throw new AppleReceiptError(
+      "App Store Server API credentials are not configured.",
+      "apple_configuration_error",
+      503,
+    );
+  }
+  const privateKey = privateKeyPath
+    ? await fs.readFile(privateKeyPath, "utf8")
+    : inlinePrivateKey!.replace(/\\n/g, "\n");
+  return { keyId, issuerId, privateKey };
+}
+
+async function getServerApiClient(environment: AppleEnvironmentName) {
+  const existing = apiClients.get(environment);
+  if (existing) return existing;
+  const credentials = await readServerApiCredentials();
+  const client = new AppStoreServerAPIClient(
+    credentials.privateKey,
+    credentials.keyId,
+    credentials.issuerId,
+    APPLE_BUNDLE_ID,
+    environment === "Sandbox" ? Environment.SANDBOX : Environment.PRODUCTION,
+  );
+  apiClients.set(environment, client);
+  return client;
+}
+
 async function createVerifiers(): Promise<VerifierSet> {
   if (!APPLE_BUNDLE_ID.trim()) {
     throw new Error("APPLE_BUNDLE_ID is required for Apple signed-data verification.");
@@ -258,7 +295,7 @@ function verificationOrder(
 }
 
 async function verifyInCorrectEnvironment<T>(
-  operation: "notification" | "transaction",
+  operation: "notification" | "transaction" | "renewal",
   signedPayload: string,
   verify: (verifier: SignedDataVerifier) => Promise<T>,
 ): Promise<{ decoded: T; environment: AppleEnvironmentName }> {
@@ -329,6 +366,115 @@ async function verifyInCorrectEnvironment<T>(
     `Apple signed ${operation} validation failed. ${details || "No verifier was available."}`,
     failures,
   );
+}
+
+export async function getLatestAppleSubscriptionStatus(
+  originalTransactionId: string,
+  expectedProductId: string,
+  environment: AppleEnvironmentName = "Production",
+): Promise<VerifiedAppleReceipt> {
+  try {
+    const client = await getServerApiClient(environment);
+    const response = await client.getAllSubscriptionStatuses(originalTransactionId);
+    const candidates = (response.data || [])
+      .flatMap((group) => group.lastTransactions || [])
+      .filter(
+        (item) =>
+          item.originalTransactionId === originalTransactionId &&
+          Boolean(item.signedTransactionInfo),
+      );
+
+    const decoded = await Promise.all(
+      candidates.map(async (item) => {
+        const transactionResult = await verifyInCorrectEnvironment(
+          "transaction",
+          item.signedTransactionInfo!,
+          (verifier) => verifier.verifyAndDecodeTransaction(item.signedTransactionInfo!),
+        );
+        const renewalResult = item.signedRenewalInfo
+          ? await verifyInCorrectEnvironment(
+              "renewal",
+              item.signedRenewalInfo,
+              (verifier) => verifier.verifyAndDecodeRenewalInfo(item.signedRenewalInfo!),
+            )
+          : undefined;
+        return {
+          item,
+          transaction: transactionResult.decoded,
+          renewal: renewalResult?.decoded,
+          environment: transactionResult.environment,
+        };
+      }),
+    );
+    const latest = decoded
+      .filter(
+        ({ transaction }) =>
+          transaction.originalTransactionId === originalTransactionId &&
+          transaction.productId === expectedProductId,
+      )
+      .sort(
+        (left, right) =>
+          Number(right.transaction.expiresDate || 0) -
+          Number(left.transaction.expiresDate || 0),
+      )[0];
+
+    if (
+      !latest?.transaction.transactionId ||
+      !latest.transaction.productId ||
+      !latest.transaction.purchaseDate ||
+      !latest.transaction.expiresDate
+    ) {
+      throw new AppleReceiptError(
+        "Apple did not return a valid status for this subscription.",
+        "apple_subscription_not_found",
+        404,
+      );
+    }
+
+    const transactionExpiry = new Date(latest.transaction.expiresDate);
+    const graceExpiry = Number(latest.renewal?.gracePeriodExpiresDate || 0);
+    const expiryDate =
+      graceExpiry > transactionExpiry.getTime() ? new Date(graceExpiry) : transactionExpiry;
+    const status = latest.item.status;
+    const refunded = status === Status.REVOKED || Boolean(latest.transaction.revocationDate);
+    const activeStatus =
+      status === Status.ACTIVE || status === Status.BILLING_GRACE_PERIOD;
+
+    return {
+      productId: latest.transaction.productId,
+      transactionId: latest.transaction.transactionId,
+      originalTransactionId,
+      purchaseDate: new Date(latest.transaction.purchaseDate),
+      expiryDate,
+      active: !refunded && activeStatus && expiryDate.getTime() > Date.now(),
+      refunded,
+      autoRenewStatus: latest.renewal?.autoRenewStatus !== AutoRenewStatus.OFF,
+      billingRetry:
+        status === Status.BILLING_RETRY ||
+        Boolean(latest.renewal?.isInBillingRetryPeriod),
+      environment: latest.environment,
+      amount:
+        typeof latest.transaction.price === "number"
+          ? latest.transaction.price / 1000
+          : undefined,
+      currency: stringValue(latest.transaction.currency),
+    };
+  } catch (error) {
+    if (error instanceof AppleReceiptError) throw error;
+    logger.warn(
+      {
+        err: error,
+        originalTransactionId,
+        environment,
+      },
+      "App Store Server API subscription status request failed",
+    );
+    throw new AppleReceiptError(
+      "Apple subscription status is temporarily unavailable.",
+      "apple_subscription_status_unavailable",
+      502,
+    );
+  }
 }
 
 export async function verifyAppleNotification(signedPayload: string): Promise<VerifiedNotification> {
@@ -435,5 +581,7 @@ export async function verifyAppleTransaction(
     autoRenewStatus: true,
     billingRetry: false,
     environment: verified.environment,
+    amount: typeof transaction.price === "number" ? transaction.price / 1000 : undefined,
+    currency: stringValue(transaction.currency),
   };
 }

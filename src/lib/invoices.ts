@@ -968,7 +968,10 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
   ]);
 
   const invoiceNumber = `INV-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${String(Date.now()).slice(-6)}`;
-  const template = assertConnectedTemplate(settings);
+  // Automated purchase invoices must still be persisted and mailed when an
+  // administrator has not connected a custom editor template. In that case,
+  // the built-in PDF layout is used.
+  const template = connectedTemplate(settings) || activeTemplate(settings);
   const subtotal = Number(subscription.baseAmount || subscription.amount || 0);
   const discountTotal = Number(subscription.discountAmount || 0);
   const taxPercent = Number(subscription.taxPercent ?? settings.defaultTaxPercent ?? 0);
@@ -1014,6 +1017,10 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
     templateId: template?.id || settings.connectedTemplateId || settings.activeTemplateId || "",
     templateName: template?.name || settings.connectedTemplateName || settings.activeTemplateName || "",
     transactionId: subscription.razorpayPaymentId || subscription.appleTransactionId || subscription.razorpayOrderId || "",
+    appleTransactionId: subscription.appleTransactionId || "",
+    productName: plan?.name || subscription.planId,
+    purchaseDate: subscription.transactionDate || subscription.startDate || new Date(),
+    expiryDate: subscription.endDate,
     invoiceDate: new Date(),
     dueDate: subscription.endDate,
     items: [{
@@ -1045,7 +1052,7 @@ export async function generateInvoiceForSubscription(subscriptionId: string) {
   logger.info({ invoiceNumber, subscriptionId, amount: grandTotal, taxTotal, discountTotal }, "Invoice generated");
 
   const data = invoiceData({ ...invoice.toJSON(), userMobile: user?.mobile || "", planName: plan?.name, paidStampText: settings.paidStampText });
-  const pdf = await regenerateInvoicePdf(invoice, settings, { userMobile: user?.mobile || "", planName: plan?.name }, { requireConnectedTemplate: true });
+  const pdf = await regenerateInvoicePdf(invoice, settings, { userMobile: user?.mobile || "", planName: plan?.name });
   await invoice.save();
 
   await sendInvoiceEmail(invoice, settings, pdf);
@@ -1060,7 +1067,7 @@ export async function sendInvoiceEmail(invoice: any, providedSettings?: any, pro
         invoice,
         settings,
         {},
-        { requireConnectedTemplate: true },
+        {},
       );
       const result = await sendTemplatedEmail(EMAIL_TEMPLATE_KEYS.INVOICE_GENERATED, invoice.userEmail, {
         user_name: invoice.userName || "Learner",
@@ -1070,13 +1077,16 @@ export async function sendInvoiceEmail(invoice: any, providedSettings?: any, pro
         invoice_amount: `${invoice.currency || "INR"} ${Number(invoice.amount || 0).toFixed(2)}`,
         payment_amount: `${invoice.currency || "INR"} ${Number(invoice.amount || 0).toFixed(2)}`,
         invoice_date: new Date(invoice.issuedAt || invoice.createdAt).toLocaleDateString(),
-        due_date: invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString("en-IN") : "",
+        due_date: invoice.expiryDate || invoice.dueDate
+          ? new Date(invoice.expiryDate || invoice.dueDate).toLocaleDateString("en-IN")
+          : "",
         tax_amount: `${invoice.currency || "INR"} ${Number(invoice.taxTotal || 0).toFixed(2)}`,
         convenience_fee: `${invoice.currency || "INR"} ${Number(invoice.convenienceCharge || 0).toFixed(2)}`,
         convenience_fee_gst: `${invoice.currency || "INR"} ${Number(invoice.convenienceChargeGst || 0).toFixed(2)}`,
         total_amount: `${invoice.currency || "INR"} ${Number(invoice.grandTotal || invoice.amount || 0).toFixed(2)}`,
         payment_status: invoice.status || "paid",
         transaction_id: invoice.transactionId || "",
+        plan_name: invoice.productName || "",
         support_email: settings.companyEmail || settings.smtp?.fromEmail || "support@krita.com",
       }, [{ filename: `${invoice.invoiceNumber}.pdf`, contentType: "application/pdf", content: pdf }]);
 

@@ -13,6 +13,10 @@ export interface IInvoice extends Document {
   currency: string;
   status: "draft" | "sent" | "paid" | "pending" | "overdue" | "cancelled" | "void" | "failed";
   transactionId?: string;
+  appleTransactionId?: string;
+  productName?: string;
+  purchaseDate?: Date;
+  expiryDate?: Date;
   invoiceDate?: Date;
   dueDate?: Date;
   billingCompany?: Record<string, unknown>;
@@ -57,6 +61,10 @@ const invoiceSchema = new Schema<IInvoice>(
     currency: { type: String, default: "INR" },
     status: { type: String, enum: ["draft", "sent", "paid", "pending", "overdue", "cancelled", "void", "failed"], default: "draft", index: true },
     transactionId: String,
+    appleTransactionId: { type: String, trim: true, index: true },
+    productName: String,
+    purchaseDate: Date,
+    expiryDate: Date,
     invoiceDate: Date,
     dueDate: Date,
     billingCompany: { type: Schema.Types.Mixed, default: {} },
@@ -97,6 +105,11 @@ const invoiceSchema = new Schema<IInvoice>(
       },
     },
   },
+);
+
+invoiceSchema.index(
+  { subscriptionId: 1 },
+  { unique: true, name: "unique_subscription_invoice" },
 );
 
 export const Invoice = mongoose.models["Invoice"] ?? mongoose.model<IInvoice>("Invoice", invoiceSchema);

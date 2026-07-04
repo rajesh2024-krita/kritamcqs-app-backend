@@ -76,9 +76,9 @@ const DEFAULT_COPY: Record<string, { subject: string; textContent: string; htmlC
     htmlContent: "<p>Hi {{user_name}},</p><p>SMTP is configured correctly for <strong>{{app_name}}</strong> emails.</p><p>Sent on {{current_date}} at {{current_time}}.</p>",
   },
   [EMAIL_TEMPLATE_KEYS.INVOICE_GENERATED]: {
-    subject: "Your invoice {{invoice_number}} from {{company_name}}",
-    textContent: "Hi {{customer_name}}, your invoice {{invoice_number}} for {{invoice_amount}} is attached. Due date: {{due_date}}.",
-    htmlContent: "<p>Hi {{customer_name}},</p><p>Your invoice <strong>{{invoice_number}}</strong> for <strong>{{invoice_amount}}</strong> is attached.</p><p>Due date: {{due_date}}</p>",
+    subject: "Subscription confirmed - invoice {{invoice_number}}",
+    textContent: "Hi {{customer_name}}, your subscription is confirmed. Invoice {{invoice_number}} for {{invoice_amount}} is attached. Subscription expiry date: {{due_date}}.",
+    htmlContent: "<p>Hi {{customer_name}},</p><p>Your subscription is confirmed.</p><p>Invoice <strong>{{invoice_number}}</strong> for <strong>{{invoice_amount}}</strong> is attached.</p><p>Subscription expiry date: {{due_date}}</p>",
   },
   invoice_default: {
     subject: "Your invoice {{invoice_number}} from {{company_name}}",

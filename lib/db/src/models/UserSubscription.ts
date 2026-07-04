@@ -13,6 +13,11 @@ export interface IUserSubscription extends Document {
   expiryDate: Date;
   subscriptionStatus: AppleSubscriptionStatus;
   autoRenewStatus: boolean;
+  retryPending: boolean;
+  retryCount: number;
+  lastVerificationAt?: Date;
+  lastRetryAt?: Date;
+  nextRetryAt?: Date;
   platform: "ios";
   latestWebhookEvent?: {
     type?: string;
@@ -44,6 +49,11 @@ const UserSubscriptionSchema = new Schema<IUserSubscription>(
       index: true,
     },
     autoRenewStatus: { type: Boolean, default: true },
+    retryPending: { type: Boolean, default: false, index: true },
+    retryCount: { type: Number, default: 0, min: 0 },
+    lastVerificationAt: Date,
+    lastRetryAt: Date,
+    nextRetryAt: { type: Date, index: true },
     platform: { type: String, enum: ["ios"], default: "ios", required: true, index: true },
     latestWebhookEvent: { type: Schema.Types.Mixed },
     environment: { type: String, enum: ["Production", "Sandbox"] },
@@ -62,6 +72,13 @@ const UserSubscriptionSchema = new Schema<IUserSubscription>(
     },
   },
 );
+
+UserSubscriptionSchema.index({
+  platform: 1,
+  retryPending: 1,
+  expiryDate: 1,
+  nextRetryAt: 1,
+});
 
 export const UserSubscription =
   mongoose.models["UserSubscription"] ??

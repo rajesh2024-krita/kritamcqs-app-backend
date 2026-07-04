@@ -126,6 +126,11 @@ export async function handleAppleWebhook(req: Request, res: Response) {
           renewal?.autoRenewStatus === undefined ? true : renewal.autoRenewStatus === 1,
         billingRetry: false,
         environment,
+        amount:
+          typeof transaction.price === "number"
+            ? transaction.price / 1000
+            : undefined,
+        currency: transaction.currency,
       }).catch((error) => {
         req.log.error(
           { err: error, originalTransactionId, transactionId: transaction.transactionId },

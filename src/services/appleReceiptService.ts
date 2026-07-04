@@ -58,6 +58,8 @@ export type VerifiedAppleReceipt = {
   autoRenewStatus: boolean;
   billingRetry: boolean;
   environment: "Production" | "Sandbox";
+  amount?: number;
+  currency?: string;
 };
 
 async function requestVerification(url: string, receipt: string): Promise<VerifyReceiptResponse> {
