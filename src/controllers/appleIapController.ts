@@ -6,6 +6,7 @@ import type { AuthenticatedRequest } from "../middlewares/auth";
 import {
   AppleReceiptError,
   APPLE_PRODUCT_ID,
+  isAppleNonRenewingProduct,
   verifyAppleReceipt,
 } from "../services/appleReceiptService";
 import {
@@ -38,6 +39,10 @@ const restoreSchema = z.object(appleProofFields).refine(
   (body) => Boolean(body.receipt || body.signedTransactionInfo),
   { message: "An Apple receipt or signed transaction is required." },
 );
+
+const accountTokenSchema = z.object({
+  productId: z.string().trim().min(1).optional(),
+});
 
 function respondWithError(res: Response, error: unknown) {
   if (error instanceof z.ZodError) {
@@ -90,8 +95,16 @@ export async function verifyApplePurchase(req: AuthenticatedRequest, res: Respon
     }
 
     const verified = body.signedTransactionInfo
-      ? await verifyAppleTransaction(body.signedTransactionInfo, body.productId)
-      : await verifyAppleReceipt(body.receipt!, body.productId);
+      ? await verifyAppleTransaction(body.signedTransactionInfo, body.productId, {
+          nonRenewingDurationMonths: isAppleNonRenewingProduct(body.productId)
+            ? plan.durationMonths
+            : undefined,
+        })
+      : await verifyAppleReceipt(body.receipt!, body.productId, {
+          nonRenewingDurationMonths: isAppleNonRenewingProduct(body.productId)
+            ? plan.durationMonths
+            : undefined,
+        });
     if (verified.productId !== body.productId) {
       throw new AppleReceiptError("Purchase does not match the selected iOS plan.", "apple_product_mismatch");
     }
@@ -147,16 +160,28 @@ export async function restoreApplePurchase(req: AuthenticatedRequest, res: Respo
     const configuredPlans = await SubscriptionPlan.find({
       platform: "ios",
       billingProductId: { $exists: true, $ne: "" },
-    }).select("billingProductId");
+    }).select("billingProductId durationMonths");
     const productIds = [
       ...new Set([
         ...configuredPlans.map((plan) => String(plan.billingProductId || "")).filter(Boolean),
         ...(APPLE_PRODUCT_ID ? [APPLE_PRODUCT_ID] : []),
       ]),
     ];
+    const nonRenewingDurationMonthsByProduct = Object.fromEntries(
+      configuredPlans
+        .filter((plan) => isAppleNonRenewingProduct(String(plan.billingProductId || "")))
+        .map((plan) => [
+          String(plan.billingProductId),
+          Number(plan.durationMonths),
+        ]),
+    );
     const verified = body.signedTransactionInfo
-      ? await verifyAppleTransaction(body.signedTransactionInfo, productIds)
-      : await verifyAppleReceipt(body.receipt!, productIds);
+      ? await verifyAppleTransaction(body.signedTransactionInfo, productIds, {
+          nonRenewingDurationMonthsByProduct,
+        })
+      : await verifyAppleReceipt(body.receipt!, productIds, {
+          nonRenewingDurationMonthsByProduct,
+        });
     const fulfillment = await fulfillVerifiedApplePurchase(
       req.userId!,
       body.receipt || body.signedTransactionInfo!,
@@ -185,6 +210,7 @@ export async function restoreApplePurchase(req: AuthenticatedRequest, res: Respo
 
 export async function getAppleAppAccountToken(req: AuthenticatedRequest, res: Response) {
   try {
+    const { productId } = accountTokenSchema.parse(req.body || {});
     const user = await User.findById(req.userId);
     if (!user) {
       res.status(404).json({ success: false, error: "user_not_found", message: "User not found." });
@@ -195,6 +221,24 @@ export async function getAppleAppAccountToken(req: AuthenticatedRequest, res: Re
       platform: "ios",
     }).sort({ expiryDate: -1 });
     if (existingSubscription) {
+      if (existingSubscription.expiryDate.getTime() > Date.now()) {
+        res.status(409).json({
+          success: false,
+          status: "already_subscribed",
+          error: "already_subscribed",
+          message: "Your App Store subscription is already active.",
+          expiresAt: existingSubscription.expiryDate,
+        });
+        return;
+      }
+      if (productId && isAppleNonRenewingProduct(productId)) {
+        if (!user.appleAppAccountToken) {
+          user.appleAppAccountToken = crypto.randomUUID();
+          await user.save();
+        }
+        res.json({ success: true, appAccountToken: user.appleAppAccountToken });
+        return;
+      }
       const latest = await getLatestAppleSubscriptionStatus(
         existingSubscription.originalTransactionId,
         existingSubscription.productId,

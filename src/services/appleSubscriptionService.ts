@@ -90,7 +90,9 @@ export async function syncUserPremiumEntitlement(userId: string) {
 
 function statusFromReceipt(receipt: VerifiedAppleReceipt): AppleSubscriptionStatus {
   if (receipt.refunded) return "refunded";
-  if (receipt.active) return receipt.autoRenewStatus ? "active" : "cancelled";
+  if (receipt.active) {
+    return receipt.nonRenewing || receipt.autoRenewStatus ? "active" : "cancelled";
+  }
   if (receipt.billingRetry) return "failed";
   return "expired";
 }

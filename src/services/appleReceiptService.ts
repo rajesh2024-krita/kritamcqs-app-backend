@@ -4,7 +4,22 @@ const PRODUCTION_VERIFY_URL = "https://buy.itunes.apple.com/verifyReceipt";
 const SANDBOX_VERIFY_URL = "https://sandbox.itunes.apple.com/verifyReceipt";
 
 export const APPLE_BUNDLE_ID = process.env["APPLE_BUNDLE_ID"] || "app.kritamcqs.iosapp";
-export const APPLE_PRODUCT_ID = process.env["APPLE_PREMIUM_PRODUCT_ID"] || "";
+export const APPLE_PRODUCT_ID =
+  process.env["APPLE_PREMIUM_PRODUCT_ID"] ||
+  "app.kritamcqs.iosapp.premium.6month";
+export const APPLE_NON_RENEWING_PRODUCT_IDS = new Set(
+  String(
+    process.env["APPLE_NON_RENEWING_PRODUCT_IDS"] ||
+      "app.kritamcqs.iosapp.premium.6month",
+  )
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
+
+export function isAppleNonRenewingProduct(productId: string) {
+  return APPLE_NON_RENEWING_PRODUCT_IDS.has(String(productId || "").trim());
+}
 
 type AppleReceiptTransaction = {
   product_id?: string;
@@ -60,6 +75,12 @@ export type VerifiedAppleReceipt = {
   environment: "Production" | "Sandbox";
   amount?: number;
   currency?: string;
+  nonRenewing?: boolean;
+};
+
+export type AppleVerificationOptions = {
+  nonRenewingDurationMonths?: number;
+  nonRenewingDurationMonthsByProduct?: Record<string, number>;
 };
 
 async function requestVerification(url: string, receipt: string): Promise<VerifyReceiptResponse> {
@@ -104,6 +125,7 @@ function toDate(value: string | undefined, label: string) {
 export async function verifyAppleReceipt(
   receipt: string,
   expectedProductIds: string | string[] = APPLE_PRODUCT_ID,
+  options: AppleVerificationOptions = {},
 ): Promise<VerifiedAppleReceipt> {
   try {
     const supportedProductIds = new Set(
@@ -156,9 +178,23 @@ export async function verifyAppleReceipt(
       throw new AppleReceiptError("Receipt transaction identifiers are missing.", "invalid_apple_receipt");
     }
 
-    const purchaseDate = toDate(latest.purchase_date_ms, "purchase date");
-    const expiryDate = toDate(latest.expires_date_ms, "expiry date");
     const verifiedProductId = latest.product_id!;
+    const purchaseDate = toDate(latest.purchase_date_ms, "purchase date");
+    const nonRenewingDurationMonths =
+      options.nonRenewingDurationMonthsByProduct?.[verifiedProductId] ??
+      options.nonRenewingDurationMonths;
+    const nonRenewing =
+      isAppleNonRenewingProduct(verifiedProductId) &&
+      Number(nonRenewingDurationMonths) > 0;
+    const expiryDate = latest.expires_date_ms
+      ? toDate(latest.expires_date_ms, "expiry date")
+      : nonRenewing
+        ? new Date(
+            new Date(purchaseDate).setMonth(
+              purchaseDate.getMonth() + Number(nonRenewingDurationMonths),
+            ),
+          )
+        : toDate(undefined, "expiry date");
     const renewal = (result.pending_renewal_info || []).find(
       (item) =>
         item.original_transaction_id === latest.original_transaction_id ||
@@ -180,9 +216,14 @@ export async function verifyAppleReceipt(
       expiryDate: effectiveExpiryDate,
       active: !refunded && effectiveExpiryDate.getTime() > Date.now(),
       refunded,
-      autoRenewStatus: renewal ? renewal.auto_renew_status === "1" : true,
+      autoRenewStatus: nonRenewing
+        ? false
+        : renewal
+          ? renewal.auto_renew_status === "1"
+          : true,
       billingRetry: renewal?.is_in_billing_retry_period === "1",
       environment: result.environment === "Sandbox" ? "Sandbox" : environment,
+      nonRenewing,
     };
 
     logger.info(

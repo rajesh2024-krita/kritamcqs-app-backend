@@ -15,6 +15,8 @@ import { logger } from "../lib/logger";
 import {
   APPLE_BUNDLE_ID,
   AppleReceiptError,
+  type AppleVerificationOptions,
+  isAppleNonRenewingProduct,
   type VerifiedAppleReceipt,
 } from "./appleReceiptService";
 
@@ -499,6 +501,7 @@ export async function verifyAppleNotification(signedPayload: string): Promise<Ve
 export async function verifyAppleTransaction(
   signedTransactionInfo: string,
   expectedProductIds: string | string[],
+  options: AppleVerificationOptions = {},
 ): Promise<VerifiedAppleReceipt> {
   const supportedProductIds = new Set(
     (Array.isArray(expectedProductIds) ? expectedProductIds : [expectedProductIds])
@@ -560,7 +563,7 @@ export async function verifyAppleTransaction(
       "invalid_apple_transaction",
     );
   }
-  if (!transaction.purchaseDate || !transaction.expiresDate) {
+  if (!transaction.purchaseDate) {
     throw new AppleReceiptError(
       "The signed transaction is missing subscription dates.",
       "invalid_apple_transaction",
@@ -568,7 +571,25 @@ export async function verifyAppleTransaction(
   }
 
   const purchaseDate = new Date(transaction.purchaseDate);
-  const expiryDate = new Date(transaction.expiresDate);
+  const nonRenewingDurationMonths =
+    options.nonRenewingDurationMonthsByProduct?.[transaction.productId] ??
+    options.nonRenewingDurationMonths;
+  const nonRenewing =
+    isAppleNonRenewingProduct(transaction.productId) &&
+    Number(nonRenewingDurationMonths) > 0;
+  if (!transaction.expiresDate && !nonRenewing) {
+    throw new AppleReceiptError(
+      "The signed transaction is missing subscription expiry.",
+      "invalid_apple_transaction",
+    );
+  }
+  const expiryDate = transaction.expiresDate
+    ? new Date(transaction.expiresDate)
+    : new Date(
+        new Date(purchaseDate).setMonth(
+          purchaseDate.getMonth() + Number(nonRenewingDurationMonths),
+        ),
+      );
   const refunded = Boolean(transaction.revocationDate);
   return {
     productId: transaction.productId,
@@ -578,10 +599,11 @@ export async function verifyAppleTransaction(
     expiryDate,
     active: !refunded && !transaction.isUpgraded && expiryDate.getTime() > Date.now(),
     refunded,
-    autoRenewStatus: true,
+    autoRenewStatus: !nonRenewing,
     billingRetry: false,
     environment: verified.environment,
     amount: typeof transaction.price === "number" ? transaction.price / 1000 : undefined,
     currency: stringValue(transaction.currency),
+    nonRenewing,
   };
 }

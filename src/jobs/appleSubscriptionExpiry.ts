@@ -3,6 +3,7 @@ import { Invoice, Subscription, UserSubscription } from "@api/db";
 import { generateInvoiceForSubscription } from "../lib/invoices";
 import { logger } from "../lib/logger";
 import { getLatestAppleSubscriptionStatus } from "../services/appleNotificationService";
+import { APPLE_NON_RENEWING_PRODUCT_IDS } from "../services/appleReceiptService";
 import {
   fulfillVerifiedApplePurchase,
   saveVerifiedAppleSubscription,
@@ -58,6 +59,7 @@ export async function verifyExpiredAppleSubscriptions() {
   );
   const candidates = await UserSubscription.find({
     platform: "ios",
+    productId: { $nin: [...APPLE_NON_RENEWING_PRODUCT_IDS] },
     expiryDate: { $gte: cutoff, $lte: now },
     $or: [
       {
