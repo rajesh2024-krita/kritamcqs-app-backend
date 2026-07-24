@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import { InvoiceSettings, User } from "@api/db";
 import { sendEmail } from "../lib/simple-email";
 import { logger } from "../lib/logger";
-import { sendToUser } from "./notificationService";
+import { createUserNotification } from "./notificationService";
 
 type ReminderConfiguration = {
   _id: mongoose.Types.ObjectId;
@@ -227,18 +227,27 @@ async function deliverReminder(
 
   if (config.channels !== "Email") {
     try {
-      const delivery = await sendToUser(String(reminder.userId), {
-        title: render(config.notificationTitle, values),
-        body: render(config.notificationMessage, values),
-        data: {
-          deepLink: "/subscription",
+      const reminderNumber = Number(reminder.reminderCount || 0) + 1;
+      const notification = await createUserNotification(
+        {
+          userId: String(reminder.userId),
+          type: "subscription",
+          title: render(config.notificationTitle, values),
+          body: render(config.notificationMessage, values),
+          dedupeKey: `subscription-reminder:${String(reminder._id)}:${reminderNumber}`,
+          visibleInApp: true,
           linkUrl: "/subscription",
-          category: "subscription_reminder",
-          trigger,
+          targetGroup: "subscription_abandoned",
+          deliveryMode: config.channels === "Both" ? "email_push" : "push",
+          notificationStatus: "created",
+          pushStatus: "pending",
+          senderName: "Krita",
+          sentAt: new Date(),
         },
-      });
-      const attempted = delivery.successCount + delivery.failureCount;
-      notificationStatus = delivery.successCount > 0 ? "sent" : attempted ? "failed" : "skipped";
+        { autoPush: true },
+      );
+      notificationStatus = notification.pushStatus === "sent" ? "sent" : notification.pushStatus || "created";
+      if (notification.pushError) errorMessage = notification.pushError;
     } catch (error) {
       notificationStatus = "failed";
       errorMessage = error instanceof Error ? error.message : "Push notification failed";
