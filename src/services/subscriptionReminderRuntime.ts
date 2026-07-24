@@ -9,6 +9,7 @@ type ReminderConfiguration = {
   reminderName?: string;
   status?: string;
   channels?: "Notification" | "Email" | "Both";
+  immediateReminderEnabled?: boolean;
   initialDelay?: number;
   repeatInterval?: number;
   delayUnit?: "Minutes" | "Hours" | "Days";
@@ -31,6 +32,7 @@ type SubscriptionReminder = {
   platform?: "Android" | "iOS" | "Web";
   status?: string;
   reminderCount?: number;
+  nextReminderDate?: Date;
   purchaseCompleted?: boolean;
 };
 
@@ -121,30 +123,63 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
   if (!config) return { skipped: true, reason: "No enabled reminder configuration" };
 
   const userObjectId = new mongoose.Types.ObjectId(userId);
-  const result = await collection("subscription_reminders").findOneAndUpdate(
-    { userId: userObjectId, status: "pending", purchaseCompleted: false },
-    {
-      $set: {
-        subscriptionId: String(body?.subscriptionId || body?.orderId || ""),
-        subscriptionPlan: String(body?.subscriptionPlan || body?.planName || ""),
-        eventType,
-        eventTime: new Date(),
-        platform,
-        nextReminderDate: nextDate(config),
-        updatedAt: new Date(),
-      },
-      $setOnInsert: {
-        userId: userObjectId,
-        status: "pending",
-        reminderCount: 0,
-        purchaseCompleted: false,
-        createdAt: new Date(),
-      },
-    },
-    { upsert: true, returnDocument: "after" },
-  );
+  const reminderCollection = collection("subscription_reminders");
+  const existing = await reminderCollection.findOne({
+    userId: userObjectId,
+    status: "pending",
+    purchaseCompleted: false,
+  }) as SubscriptionReminder | null;
+  const updateFields = {
+    subscriptionId: String(body?.subscriptionId || body?.orderId || ""),
+    subscriptionPlan: String(body?.subscriptionPlan || body?.planName || ""),
+    eventType,
+    eventTime: new Date(),
+    platform,
+    updatedAt: new Date(),
+  };
 
-  return { skipped: false, reminder: { ...result.value, id: String(result.value?._id), _id: undefined } };
+  let reminder: SubscriptionReminder;
+  let immediateResult: Awaited<ReturnType<typeof deliverReminder>> | null = null;
+  const shouldSendImmediate = config.immediateReminderEnabled !== false && Number(existing?.reminderCount || 0) === 0;
+
+  if (existing) {
+    await reminderCollection.updateOne(
+      { _id: existing._id },
+      {
+        $set: {
+          ...updateFields,
+          ...(shouldSendImmediate ? {} : { nextReminderDate: existing.reminderCount ? existing.nextReminderDate : nextDate(config) }),
+        },
+      },
+    );
+    reminder = { ...existing, ...updateFields };
+  } else {
+    const insert = {
+      ...updateFields,
+      ...(shouldSendImmediate ? {} : { nextReminderDate: nextDate(config) }),
+      userId: userObjectId,
+      status: "pending",
+      reminderCount: 0,
+      purchaseCompleted: false,
+      createdAt: new Date(),
+    };
+    const result = await reminderCollection.insertOne(insert);
+    reminder = {
+      ...insert,
+      _id: result.insertedId,
+    };
+  }
+
+  if (shouldSendImmediate) {
+    immediateResult = await deliverReminder(reminder, config, "initial", "immediate");
+  }
+
+  const latest = await reminderCollection.findOne({ _id: reminder._id });
+  return {
+    skipped: false,
+    immediateSent: Boolean(immediateResult?.sent),
+    reminder: { ...latest, id: String(latest?._id), _id: undefined },
+  };
 }
 
 export async function completeSubscriptionReminders(userId: string) {
@@ -162,23 +197,18 @@ export async function completeSubscriptionReminders(userId: string) {
   );
 }
 
-async function sendDueReminder(reminder: SubscriptionReminder) {
-  const platform = reminder.platform || "Android";
-  const config = await enabledConfig(platform);
-  if (!config) {
-    await collection("subscription_reminders").updateOne(
-      { _id: reminder._id },
-      { $set: { status: "stopped", stoppedReason: "Reminder disabled", updatedAt: new Date() } },
-    );
-    return;
-  }
-
+async function deliverReminder(
+  reminder: SubscriptionReminder,
+  config: ReminderConfiguration,
+  nextMode: "initial" | "repeat",
+  trigger: "immediate" | "scheduled",
+) {
   if (Number(reminder.reminderCount || 0) >= Number(config.maximumReminderCount || 1)) {
     await collection("subscription_reminders").updateOne(
       { _id: reminder._id },
       { $set: { status: "max_reached", updatedAt: new Date() } },
     );
-    return;
+    return { sent: false, reason: "Maximum reminder count reached" };
   }
 
   const user = await User.findById(reminder.userId).lean();
@@ -187,7 +217,7 @@ async function sendDueReminder(reminder: SubscriptionReminder) {
       { _id: reminder._id },
       { $set: { status: "stopped", stoppedReason: "User not found", updatedAt: new Date() } },
     );
-    return;
+    return { sent: false, reason: "User not found" };
   }
 
   const values = placeholders(user, reminder, config);
@@ -204,6 +234,7 @@ async function sendDueReminder(reminder: SubscriptionReminder) {
           deepLink: "/subscription",
           linkUrl: "/subscription",
           category: "subscription_reminder",
+          trigger,
         },
       });
       const attempted = delivery.successCount + delivery.failureCount;
@@ -241,6 +272,9 @@ async function sendDueReminder(reminder: SubscriptionReminder) {
     }
   }
 
+  const reminderCount = Number(reminder.reminderCount || 0) + 1;
+  const maxReached = reminderCount >= Number(config.maximumReminderCount || 1);
+
   await collection("reminder_logs").insertOne({
     reminderId: reminder._id,
     configurationId: config._id,
@@ -250,26 +284,45 @@ async function sendDueReminder(reminder: SubscriptionReminder) {
     status: notificationStatus === "failed" || emailStatus === "failed" ? "Failed" : "Success",
     errorMessage,
     retryCount: 0,
-    payload: {},
+    payload: { trigger, reminderNumber: reminderCount },
     createdAt: new Date(),
     updatedAt: new Date(),
   });
 
-  const reminderCount = Number(reminder.reminderCount || 0) + 1;
-  const maxReached = reminderCount >= Number(config.maximumReminderCount || 1);
   await collection("subscription_reminders").updateOne(
     { _id: reminder._id },
     {
       $set: {
         reminderCount,
         lastReminderDate: new Date(),
-        ...(maxReached ? {} : { nextReminderDate: nextDate(config, true) }),
+        ...(maxReached ? {} : { nextReminderDate: nextDate(config, nextMode === "repeat") }),
         status: maxReached ? "max_reached" : "pending",
         updatedAt: new Date(),
       },
       ...(maxReached ? { $unset: { nextReminderDate: "" } } : {}),
     },
   );
+
+  return { sent: notificationStatus === "sent" || emailStatus === "sent", notificationStatus, emailStatus };
+}
+
+/*
+ * Kept separate from trackSubscriptionReminder so scheduled retries always use
+ * the latest enabled configuration, while immediate reminder #1 uses the
+ * configuration selected at cancellation time.
+ */
+async function sendDueReminder(reminder: SubscriptionReminder) {
+  const platform = reminder.platform || "Android";
+  const config = await enabledConfig(platform);
+  if (!config) {
+    await collection("subscription_reminders").updateOne(
+      { _id: reminder._id },
+      { $set: { status: "stopped", stoppedReason: "Reminder disabled", updatedAt: new Date() } },
+    );
+    return;
+  }
+
+  await deliverReminder(reminder, config, "repeat", "scheduled");
 }
 
 export async function runDueSubscriptionReminders(limit = 50) {
