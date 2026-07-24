@@ -140,7 +140,7 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
 
   let reminder: SubscriptionReminder;
   let immediateResult: Awaited<ReturnType<typeof deliverReminder>> | null = null;
-  const shouldSendImmediate = config.immediateReminderEnabled !== false && Number(existing?.reminderCount || 0) === 0;
+  const shouldAttemptImmediate = config.immediateReminderEnabled !== false && Number(existing?.reminderCount || 0) === 0;
 
   if (existing) {
     await reminderCollection.updateOne(
@@ -148,7 +148,7 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
       {
         $set: {
           ...updateFields,
-          ...(shouldSendImmediate ? {} : { nextReminderDate: existing.reminderCount ? existing.nextReminderDate : nextDate(config) }),
+          ...(shouldAttemptImmediate ? {} : { nextReminderDate: existing.reminderCount ? existing.nextReminderDate : nextDate(config) }),
         },
       },
     );
@@ -156,7 +156,7 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
   } else {
     const insert = {
       ...updateFields,
-      ...(shouldSendImmediate ? {} : { nextReminderDate: nextDate(config) }),
+      ...(shouldAttemptImmediate ? {} : { nextReminderDate: nextDate(config) }),
       userId: userObjectId,
       status: "pending",
       reminderCount: 0,
@@ -170,8 +170,35 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
     };
   }
 
-  if (shouldSendImmediate) {
-    immediateResult = await deliverReminder(reminder, config, "initial", "immediate");
+  if (shouldAttemptImmediate) {
+    const lock = await reminderCollection.updateOne(
+      {
+        _id: reminder._id,
+        status: "pending",
+        purchaseCompleted: false,
+        reminderCount: 0,
+        immediateReminderSentAt: { $exists: false },
+        immediateReminderSending: { $ne: true },
+      },
+      {
+        $set: {
+          immediateReminderSending: true,
+          updatedAt: new Date(),
+        },
+      },
+    );
+
+    if (lock.modifiedCount > 0) {
+      try {
+        immediateResult = await deliverReminder(reminder, config, "initial", "immediate");
+      } catch (error) {
+        await reminderCollection.updateOne(
+          { _id: reminder._id },
+          { $unset: { immediateReminderSending: "" }, $set: { updatedAt: new Date() } },
+        );
+        throw error;
+      }
+    }
   }
 
   const latest = await reminderCollection.findOne({ _id: reminder._id });
@@ -206,7 +233,7 @@ async function deliverReminder(
   if (Number(reminder.reminderCount || 0) >= Number(config.maximumReminderCount || 1)) {
     await collection("subscription_reminders").updateOne(
       { _id: reminder._id },
-      { $set: { status: "max_reached", updatedAt: new Date() } },
+      { $set: { status: "max_reached", updatedAt: new Date() }, $unset: { immediateReminderSending: "" } },
     );
     return { sent: false, reason: "Maximum reminder count reached" };
   }
@@ -215,7 +242,7 @@ async function deliverReminder(
   if (!user) {
     await collection("subscription_reminders").updateOne(
       { _id: reminder._id },
-      { $set: { status: "stopped", stoppedReason: "User not found", updatedAt: new Date() } },
+      { $set: { status: "stopped", stoppedReason: "User not found", updatedAt: new Date() }, $unset: { immediateReminderSending: "" } },
     );
     return { sent: false, reason: "User not found" };
   }
@@ -305,10 +332,14 @@ async function deliverReminder(
         reminderCount,
         lastReminderDate: new Date(),
         ...(maxReached ? {} : { nextReminderDate: nextDate(config, nextMode === "repeat") }),
+        ...(trigger === "immediate" ? { immediateReminderSentAt: new Date() } : {}),
         status: maxReached ? "max_reached" : "pending",
         updatedAt: new Date(),
       },
-      ...(maxReached ? { $unset: { nextReminderDate: "" } } : {}),
+      $unset: {
+        ...(maxReached ? { nextReminderDate: "" } : {}),
+        ...(trigger === "immediate" ? { immediateReminderSending: "" } : {}),
+      },
     },
   );
 
