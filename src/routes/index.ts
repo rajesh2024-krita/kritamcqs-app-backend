@@ -31,6 +31,7 @@ import appleRouter from "./apple";
 import scriptsRouter from "./scripts";
 import subscriptionRemindersRouter from "./subscription-reminders";
 import settingsRouter from "./settings";
+import microsoftClarityRouter from "./microsoft-clarity";
 
 const router: IRouter = Router();
 
@@ -64,6 +65,7 @@ router.use("/apple", appleRouter);
 router.use("/scripts", scriptsRouter);
 router.use("/subscription-reminders", subscriptionRemindersRouter);
 router.use("/settings", settingsRouter);
+router.use("/microsoft-clarity", microsoftClarityRouter);
 router.use("/admin-auth", adminAuthRouter);
 router.use("/admin", adminRouter);
 
