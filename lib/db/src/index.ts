@@ -94,6 +94,8 @@ export * from "./models/SubscriptionPageTemplate";
 export * from "./models/DashboardCarouselBanner";
 export * from "./models/ExplanationPreviewTemplate";
 export * from "./models/AppUsageSettings";
+export * from "./models/AppUsageSession";
+export * from "./models/AppUsageEvent";
 export * from "./models/AppNavigationEvent";
 export * from "./models/WebsiteContent";
 export * from "./models/PolicyPage";
