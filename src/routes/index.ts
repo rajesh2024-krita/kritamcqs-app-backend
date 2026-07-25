@@ -30,6 +30,7 @@ import iapRouter from "./iap";
 import appleRouter from "./apple";
 import scriptsRouter from "./scripts";
 import subscriptionRemindersRouter from "./subscription-reminders";
+import settingsRouter from "./settings";
 
 const router: IRouter = Router();
 
@@ -62,6 +63,7 @@ router.use("/iap", iapRouter);
 router.use("/apple", appleRouter);
 router.use("/scripts", scriptsRouter);
 router.use("/subscription-reminders", subscriptionRemindersRouter);
+router.use("/settings", settingsRouter);
 router.use("/admin-auth", adminAuthRouter);
 router.use("/admin", adminRouter);
 

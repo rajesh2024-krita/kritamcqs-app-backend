@@ -41,6 +41,7 @@ const defaultAllowedOrigins = [
   "http://admin.kritamcqs.com",
   "https://admin.kritamcqs.com",
   "http://localhost:3000",
+  "http://localhost:3001",
   "https://acd9-2409-40f4-111b-5b22-b02b-bda8-9293-fc44.ngrok-free.app",
 ];
 const configuredAllowedOrigins = String(process.env["CLIENT_ORIGIN"] || "")
