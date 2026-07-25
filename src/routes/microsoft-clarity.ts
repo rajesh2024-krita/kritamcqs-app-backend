@@ -13,11 +13,19 @@ const statuses = [
   "Uploading",
   "Recording",
   "Disabled",
+  "Configuration API Failed",
+  "Cordova Not Ready",
+  "Device Not Ready",
   "Initialization Failed",
+  "Plugin Not Loaded",
   "Plugin Missing",
   "Project ID Invalid",
   "Internet Unavailable",
   "Native Error",
+  "SDK Initialization Failed",
+  "Session Not Created",
+  "Upload Blocked",
+  "Upload Failed",
 ] as const;
 
 const configSchema = z.object({
