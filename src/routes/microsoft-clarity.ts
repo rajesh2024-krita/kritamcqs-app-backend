@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import { z } from "zod";
+import { MicrosoftClarityLog, MicrosoftClaritySettings } from "@api/db";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -48,6 +49,14 @@ const logSchema = z.object({
 
 const disabledConfig = { enabled: false, projectId: "", logLevel: "None" as const };
 
+function mapConfig(settings: { enabled?: boolean; projectId?: string; logLevel?: string } | null | undefined) {
+  return configSchema.parse({
+    enabled: Boolean(settings?.enabled),
+    projectId: settings?.projectId || "",
+    logLevel: settings?.logLevel || "None",
+  });
+}
+
 function normalizeBaseUrl(value = "") {
   return value.trim().replace(/\/+$/, "");
 }
@@ -76,6 +85,12 @@ async function fetchFromAdmin(path: string, init?: RequestInit) {
 
 router.get("/config", async (_req, res) => {
   try {
+    const localSettings = await MicrosoftClaritySettings.findOne({ key: "default" }).lean();
+    if (localSettings) {
+      res.json(mapConfig(localSettings));
+      return;
+    }
+
     const response = await fetchFromAdmin("/microsoft-clarity/config", {
       method: "GET",
       headers: { Accept: "application/json" },
@@ -85,7 +100,13 @@ router.get("/config", async (_req, res) => {
       res.json(disabledConfig);
       return;
     }
-    res.json(configSchema.parse(await response.json()));
+    const config = configSchema.parse(await response.json());
+    await MicrosoftClaritySettings.findOneAndUpdate(
+      { key: "default" },
+      { key: "default", ...config },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+    res.json(config);
   } catch (error) {
     logger.error({ error }, "Microsoft Clarity config fetch failed");
     res.json(disabledConfig);
@@ -94,6 +115,13 @@ router.get("/config", async (_req, res) => {
 
 router.post("/log", async (req, res) => {
   const payload = logSchema.parse(req.body || {});
+  const saved = await MicrosoftClarityLog.create({
+    ...payload,
+    timestamp: payload.timestamp ? new Date(payload.timestamp) : new Date(),
+    lastHeartbeatAt: payload.lastHeartbeatAt ? new Date(payload.lastHeartbeatAt) : undefined,
+    lastUploadAt: payload.lastUploadAt ? new Date(payload.lastUploadAt) : undefined,
+  });
+
   try {
     const response = await fetchFromAdmin("/microsoft-clarity/log", {
       method: "POST",
@@ -102,13 +130,13 @@ router.post("/log", async (req, res) => {
     });
     if (!response?.ok) {
       logger.warn({ status: response?.status, payload }, "Microsoft Clarity log forwarding failed");
-      res.status(202).json({ accepted: true, forwarded: false });
+      res.status(201).json({ accepted: true, stored: true, forwarded: false, id: String(saved._id) });
       return;
     }
-    res.status(201).json({ accepted: true, forwarded: true });
+    res.status(201).json({ accepted: true, stored: true, forwarded: true, id: String(saved._id) });
   } catch (error) {
     logger.error({ error }, "Microsoft Clarity log forwarding failed");
-    res.status(202).json({ accepted: true, forwarded: false });
+    res.status(201).json({ accepted: true, stored: true, forwarded: false, id: String(saved._id) });
   }
 });
 
