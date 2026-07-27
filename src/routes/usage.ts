@@ -55,6 +55,11 @@ const bulkEventsSchema = z.object({
   events: z.array(analyticsEventSchema).min(1).max(250),
 });
 
+function isDuplicateBulkWriteError(error: unknown) {
+  const item = error as { code?: number; writeErrors?: Array<{ code?: number }> };
+  return item?.code === 11000 || (Array.isArray(item?.writeErrors) && item.writeErrors.every((writeError) => writeError.code === 11000));
+}
+
 function normalizeBaseUrl(value = "") {
   return value.trim().replace(/\/+$/, "");
 }
@@ -158,16 +163,20 @@ async function persistEvents(req: AuthenticatedRequest, rawEvents: unknown[]) {
     osVersion: event.device?.osVersion || "",
   }));
 
-  await AppUsageEvent.bulkWrite(
-    events.map((event) => ({
-      updateOne: {
-        filter: { eventId: event.eventId },
-        update: { $setOnInsert: event },
-        upsert: true,
-      },
-    })),
-    { ordered: false },
-  );
+  try {
+    await AppUsageEvent.bulkWrite(
+      events.map((event) => ({
+        updateOne: {
+          filter: { eventId: event.eventId },
+          update: { $setOnInsert: event },
+          upsert: true,
+        },
+      })),
+      { ordered: false },
+    );
+  } catch (error) {
+    if (!isDuplicateBulkWriteError(error)) throw error;
+  }
 
   const bySession = new Map<string, typeof events>();
   events.forEach((event) => {
