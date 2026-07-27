@@ -120,12 +120,13 @@ function mapSettings(settings: { enabled?: boolean; automaticCleanupEnabled?: bo
 
 function publicUserSnapshot(req: AuthenticatedRequest) {
   const user = req.user;
+  const loginMethod = user?.loginProvider || (user?.isAppleLogin || user?.appleId ? "APPLE" : user?.googleId ? "GOOGLE" : "EMAIL");
   return {
     userId: String(req.userId || ""),
     userName: user?.name || "",
     email: user?.email || "",
     userType: user?.isPremium ? "Premium" as const : "Free" as const,
-    loginMethod: user?.loginProvider || "",
+    loginMethod,
   };
 }
 
