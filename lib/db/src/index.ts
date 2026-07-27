@@ -105,5 +105,3 @@ export * from "./models/WebsiteSettings";
 export * from "./models/OfferTimerSettings";
 export * from "./models/AppNotificationSettings";
 export * from "./models/PushDeviceToken";
-export * from "./models/MicrosoftClaritySettings";
-export * from "./models/MicrosoftClarityLog";

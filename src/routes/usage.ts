@@ -55,10 +55,56 @@ const bulkEventsSchema = z.object({
   events: z.array(analyticsEventSchema).min(1).max(250),
 });
 
+function normalizeBaseUrl(value = "") {
+  return value.trim().replace(/\/+$/, "");
+}
+
+function adminApiUrl(path: string) {
+  const baseUrl = normalizeBaseUrl(
+    process.env["ADMIN_API_BASE_URL"] ||
+      process.env["ADMIN_BACKEND_API_BASE_URL"] ||
+      "",
+  );
+  if (!baseUrl) return "";
+  return `${baseUrl.replace(/\/api$/, "")}/api${path}`;
+}
+
+async function fetchFromAdmin(path: string, init?: RequestInit) {
+  const url = adminApiUrl(path);
+  if (!url) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function getUsageSettings() {
+  const localSettings = await AppUsageSettings.findOneAndUpdate(
+    { key: "default" },
+    { $setOnInsert: { key: "default", enabled: true, automaticCleanupEnabled: false, retentionDays: 90, sessionTimeoutMinutes: 30 } },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+  const response = await fetchFromAdmin("/app-usage/settings", {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  }).catch(() => null);
+  if (!response?.ok) {
+    if (!localSettings.enabled) {
+      return AppUsageSettings.findOneAndUpdate(
+        { key: "default" },
+        { $set: { enabled: true } },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+    }
+    return localSettings;
+  }
+  const adminSettings = usageSettingsSchema.parse(await response.json());
   return AppUsageSettings.findOneAndUpdate(
     { key: "default" },
-    { $setOnInsert: { key: "default", enabled: false } },
+    { key: "default", ...adminSettings },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
 }
@@ -164,7 +210,25 @@ async function persistEvents(req: AuthenticatedRequest, rawEvents: unknown[]) {
     );
   }));
 
-  return { accepted: events.length };
+  return { accepted: events.length, events };
+}
+
+async function forwardEventsToAdmin(events: unknown[]) {
+  const payloadEvents = events.map((event) => {
+    const item = event as Record<string, unknown>;
+    return {
+      ...item,
+      timestamp: item["timestamp"] instanceof Date ? item["timestamp"].toISOString() : item["timestamp"],
+      enterTime: item["enterTime"] instanceof Date ? item["enterTime"].toISOString() : item["enterTime"],
+      exitTime: item["exitTime"] instanceof Date ? item["exitTime"].toISOString() : item["exitTime"],
+    };
+  });
+  const response = await fetchFromAdmin("/app-usage/bulk", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ events: payloadEvents }),
+  }).catch(() => null);
+  return Boolean(response?.ok);
 }
 
 router.get("/settings", requireAuth, async (_req, res) => {
@@ -179,7 +243,8 @@ router.post("/events", requireAuth, async (req: AuthenticatedRequest, res) => {
     return;
   }
   const result = await persistEvents(req, [req.body || {}]);
-  res.status(201).json({ ...result, enabled: true });
+  const forwarded = await forwardEventsToAdmin(result.events);
+  res.status(201).json({ accepted: result.accepted, enabled: true, forwarded });
 });
 
 router.post("/bulk", requireAuth, async (req: AuthenticatedRequest, res) => {
@@ -190,7 +255,8 @@ router.post("/bulk", requireAuth, async (req: AuthenticatedRequest, res) => {
   }
   const payload = bulkEventsSchema.parse(req.body || {});
   const result = await persistEvents(req, payload.events);
-  res.status(201).json({ ...result, enabled: true });
+  const forwarded = await forwardEventsToAdmin(result.events);
+  res.status(201).json({ accepted: result.accepted, enabled: true, forwarded });
 });
 
 router.post("/navigation-events", requireAuth, async (req: AuthenticatedRequest, res) => {
