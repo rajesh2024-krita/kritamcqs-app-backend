@@ -18,6 +18,12 @@ export interface INationalCompetition extends Document {
   marksPerQuestion: number;
   negativeMarks: number;
   questionIds: string[];
+  questionSelection: {
+    mode: "manual" | "automatic";
+    filters: Record<string, unknown>;
+    targetCount: number;
+    lastGeneratedAt?: Date;
+  };
   rules: string[];
   rewardsSummary: string;
   terms: string;
@@ -72,6 +78,12 @@ const NationalCompetitionSchema = new Schema<INationalCompetition>(
     marksPerQuestion: { type: Number, default: 4 },
     negativeMarks: { type: Number, default: 1 },
     questionIds: { type: [String], default: [] },
+    questionSelection: {
+      mode: { type: String, enum: ["manual", "automatic"], default: "manual" },
+      filters: { type: Schema.Types.Mixed, default: {} },
+      targetCount: { type: Number, default: 0 },
+      lastGeneratedAt: { type: Date },
+    },
     rules: { type: [String], default: [] },
     rewardsSummary: { type: String, default: "" },
     terms: { type: String, default: "" },
