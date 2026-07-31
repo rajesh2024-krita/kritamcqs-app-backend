@@ -106,7 +106,8 @@ async function getUsageSettings() {
     }
     return localSettings;
   }
-  const adminSettings = usageSettingsSchema.parse(await response.json());
+  const adminPayload = await response.json();
+  const adminSettings = usageSettingsSchema.parse(adminPayload?.data || adminPayload);
   return AppUsageSettings.findOneAndUpdate(
     { key: "default" },
     { key: "default", ...adminSettings },
@@ -126,7 +127,7 @@ function mapSettings(settings: { enabled?: boolean; automaticCleanupEnabled?: bo
 function publicUserSnapshot(req: AuthenticatedRequest) {
   const user = req.user;
   const loginMethod = user?.loginProvider || (user?.isAppleLogin || user?.appleId ? "APPLE" : user?.googleId ? "GOOGLE" : "EMAIL");
-  const email = String(user?.email || "").trim().toLowerCase();
+  const email = String(user?.email || user?.appleEmail || "").trim().toLowerCase();
   return {
     userId: String(req.userId || ""),
     userName: user?.name || "",
