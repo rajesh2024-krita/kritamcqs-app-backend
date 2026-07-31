@@ -11,6 +11,8 @@ import { getFirebaseAdminApp, getFirebaseAuth } from "../lib/firebase";
 const router: IRouter = Router();
 
 const JWT_SECRET = process.env["SESSION_SECRET"] ?? "krita-secret-key";
+const ANDROID_PACKAGE_NAME = "app.kritamcqs.androidapp";
+const LEGACY_ANDROID_PACKAGE_NAME = "com.kritamcqs.androidapp";
 
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
 const googleCertCache: { certs: Record<string, string>; expiresAt: number } = { certs: {}, expiresAt: 0 };
@@ -118,7 +120,7 @@ function getAppleAudiences(settings: any) {
 
 function looksLikeConfiguredAndroidClientId(value: unknown, settings: any) {
   const clientId = String(value || "").trim();
-  const packageName = String(settings?.googleAndroidPackageName || "com.kritamcqs.androidapp").trim();
+  const packageName = String(settings?.googleAndroidPackageName || ANDROID_PACKAGE_NAME).trim();
   return Boolean(
     clientId &&
       packageName &&
@@ -127,6 +129,12 @@ function looksLikeConfiguredAndroidClientId(value: unknown, settings: any) {
       !String(process.env["GOOGLE_WEB_CLIENT_ID"] || "").trim() &&
       String(process.env["GOOGLE_ANDROID_CLIENT_ID"] || "").trim() === clientId
   );
+}
+
+function normalizeAndroidPackageName(value: unknown) {
+  const packageName = String(value || "").trim();
+  if (!packageName || packageName === LEGACY_ANDROID_PACKAGE_NAME) return ANDROID_PACKAGE_NAME;
+  return packageName;
 }
 
 function signUser(user: any, settings?: any) {
@@ -226,7 +234,7 @@ router.get("/settings", async (_req, res) => {
     googleClientId: settings.googleEnabled && !googleClientIdIsAndroidOnly ? configuredGoogleClientId : "",
     googleAndroidClientId: settings.googleEnabled ? androidClientId || (googleClientIdIsAndroidOnly ? configuredGoogleClientId : "") : "",
     googleIosClientId: settings.googleEnabled ? iosClientId : "",
-    googleAndroidPackageName: settings.googleAndroidPackageName || "com.kritamcqs.androidapp",
+    googleAndroidPackageName: normalizeAndroidPackageName(settings.googleAndroidPackageName),
     googleAndroidConfigured: Boolean(androidClientId || googleClientIdIsAndroidOnly),
     googleWebConfigured: Boolean(configuredGoogleClientId && !googleClientIdIsAndroidOnly),
     appleEnabled: settings.appleEnabled !== false && getAppleAudiences(settings).length > 0,
