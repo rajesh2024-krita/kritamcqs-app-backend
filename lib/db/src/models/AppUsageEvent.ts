@@ -63,6 +63,7 @@ const AppUsageEventSchema = new Schema<IAppUsageEvent>(
 );
 
 AppUsageEventSchema.index({ userId: 1, timestamp: -1 });
+AppUsageEventSchema.index({ email: 1, timestamp: -1 });
 AppUsageEventSchema.index({ sessionId: 1, timestamp: 1 });
 AppUsageEventSchema.index({ platform: 1, timestamp: -1 });
 AppUsageEventSchema.index({ screen: 1, eventType: 1, timestamp: -1 });

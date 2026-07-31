@@ -126,10 +126,11 @@ function mapSettings(settings: { enabled?: boolean; automaticCleanupEnabled?: bo
 function publicUserSnapshot(req: AuthenticatedRequest) {
   const user = req.user;
   const loginMethod = user?.loginProvider || (user?.isAppleLogin || user?.appleId ? "APPLE" : user?.googleId ? "GOOGLE" : "EMAIL");
+  const email = String(user?.email || "").trim().toLowerCase();
   return {
     userId: String(req.userId || ""),
     userName: user?.name || "",
-    email: user?.email || "",
+    email,
     userType: user?.isPremium ? "Premium" as const : "Free" as const,
     loginMethod,
   };
@@ -184,18 +185,24 @@ async function persistEvents(req: AuthenticatedRequest, rawEvents: unknown[]) {
   });
 
   await Promise.all([...bySession.entries()].map(async ([sessionId, sessionEvents]) => {
-    const ordered = [...sessionEvents].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    const storedEvents = await AppUsageEvent.find({ sessionId }).sort({ timestamp: 1 }).lean();
+    const ordered = (storedEvents.length ? storedEvents : sessionEvents).sort((a: any, b: any) => a.timestamp.getTime() - b.timestamp.getTime());
     const first = ordered[0];
     const last = ordered[ordered.length - 1];
-    const screenEvents = ordered.filter((event) => event.eventType === "ScreenView");
-    const clickEvents = ordered.filter((event) => event.eventType.toLowerCase().includes("click"));
-    const durationSeconds = ordered.reduce((sum, event) => sum + Number(event.durationSeconds || 0), 0);
+    const latestUserEvent = [...ordered].reverse().find((event: any) => event.email || event.userId || event.userName) || first;
+    const screenEvents = ordered.filter((event: any) => event.eventType === "ScreenView");
+    const clickEvents = ordered.filter((event: any) => String(event.eventType || "").toLowerCase().includes("click"));
+    const durationSeconds = ordered.reduce((sum: number, event: any) => sum + Number(event.durationSeconds || 0), 0);
     await AppUsageSession.findOneAndUpdate(
       { sessionId },
       {
-        $setOnInsert: {
+        $set: {
           sessionId,
-          ...user,
+          userId: latestUserEvent.userId || user.userId,
+          userName: latestUserEvent.userName || user.userName,
+          email: String(latestUserEvent.email || user.email || "").trim().toLowerCase(),
+          userType: latestUserEvent.userType || user.userType,
+          loginMethod: latestUserEvent.loginMethod || user.loginMethod,
           deviceId: first.deviceId,
           platform: first.platform,
           appVersion: first.appVersion,
@@ -203,13 +210,9 @@ async function persistEvents(req: AuthenticatedRequest, rawEvents: unknown[]) {
           osVersion: first.osVersion,
           startedAt: first.timestamp,
           entryScreen: first.screen,
-        },
-        $set: {
           endedAt: last.timestamp,
           exitScreen: last.screen,
           lastActiveAt: last.timestamp,
-        },
-        $inc: {
           durationSeconds,
           foregroundSeconds: durationSeconds,
           screenViews: screenEvents.length,
