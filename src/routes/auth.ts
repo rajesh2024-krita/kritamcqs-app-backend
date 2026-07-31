@@ -3,6 +3,7 @@ import { AuthOtp, AuthSettings, InvoiceSettings, User } from "@api/db";
 import jwt from "jsonwebtoken";
 import type { DecodedIdToken } from "firebase-admin/auth";
 import { createHash } from "node:crypto";
+import { z } from "zod";
 import { generateOtp, generateResetToken, hashOtp, hashPassword, hashResetToken, verifyPassword } from "../lib/password";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 import { getFirebaseAdminApp, getFirebaseAuth } from "../lib/firebase";
@@ -13,6 +14,24 @@ const JWT_SECRET = process.env["SESSION_SECRET"] ?? "krita-secret-key";
 
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
 const googleCertCache: { certs: Record<string, string>; expiresAt: number } = { certs: {}, expiresAt: 0 };
+
+const authDiagnosticSchema = z.object({
+  stage: z.string().trim().max(120).optional().default("unknown"),
+  provider: z.enum(["EMAIL", "GOOGLE", "APPLE", "UNKNOWN"]).optional().default("UNKNOWN"),
+  platform: z.string().trim().max(40).optional().default("unknown"),
+  nativePlatform: z.string().trim().max(40).optional().default(""),
+  success: z.boolean().optional().default(false),
+  status: z.coerce.number().int().min(0).max(599).optional().default(0),
+  errorCode: z.string().trim().max(160).optional().default(""),
+  message: z.string().trim().max(1000).optional().default(""),
+  details: z.record(z.unknown()).optional().default({}),
+  device: z.object({
+    userAgent: z.string().trim().max(600).optional().default(""),
+    language: z.string().trim().max(80).optional().default(""),
+    online: z.boolean().optional(),
+    appVersion: z.string().trim().max(80).optional().default(""),
+  }).optional().default({}),
+});
 
 function checkRateLimit(key: string, maxAttempts = 8, windowMs = 15 * 60 * 1000) {
   const now = Date.now();
@@ -179,6 +198,21 @@ function normalizeResetToken(input: unknown) {
   return /^[a-f0-9]{64}$/i.test(token) ? token : null;
 }
 
+router.post("/diagnostics", async (req, res) => {
+  const diagnostic = authDiagnosticSchema.parse(req.body || {});
+  const logPayload = {
+    ...diagnostic,
+    ipAddress: String(req.headers["x-forwarded-for"] || req.ip || "").split(",")[0].trim(),
+    userAgent: diagnostic.device?.userAgent || req.headers["user-agent"] || "",
+  };
+  if (diagnostic.success) {
+    req.log.info(logPayload, "App authentication diagnostic");
+  } else {
+    req.log.warn(logPayload, "App authentication diagnostic");
+  }
+  res.json({ success: true });
+});
+
 router.get("/settings", async (_req, res) => {
   const settings = await getAuthSettings();
   const googleClientIds = getGoogleClientIds(settings);
@@ -193,6 +227,8 @@ router.get("/settings", async (_req, res) => {
     googleAndroidClientId: settings.googleEnabled ? androidClientId || (googleClientIdIsAndroidOnly ? configuredGoogleClientId : "") : "",
     googleIosClientId: settings.googleEnabled ? iosClientId : "",
     googleAndroidPackageName: settings.googleAndroidPackageName || "com.kritamcqs.androidapp",
+    googleAndroidConfigured: Boolean(androidClientId || googleClientIdIsAndroidOnly),
+    googleWebConfigured: Boolean(configuredGoogleClientId && !googleClientIdIsAndroidOnly),
     appleEnabled: settings.appleEnabled !== false && getAppleAudiences(settings).length > 0,
     appleBundleId: settings.appleBundleId || process.env["APPLE_BUNDLE_ID"] || "app.kritamcqs.iosapp",
     profileMobileRequired: Boolean(settings.profileMobileRequired),
