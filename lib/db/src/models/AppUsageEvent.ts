@@ -6,13 +6,24 @@ export interface IAppUsageEvent extends Document {
   userId: string;
   userName?: string;
   email?: string;
+  mobile?: string;
   userType?: "Free" | "Premium";
   loginMethod?: string;
   deviceId?: string;
   platform?: string;
   appVersion?: string;
+  deviceBrand?: string;
   deviceModel?: string;
   osVersion?: string;
+  androidVersion?: string;
+  screenResolution?: string;
+  networkType?: string;
+  ramGb?: number;
+  batteryLevel?: number;
+  batteryCharging?: boolean;
+  rootedDevice?: boolean;
+  isVirtualDevice?: boolean;
+  ipAddress?: string;
   eventType: string;
   screen?: string;
   previousScreen?: string;
@@ -35,13 +46,24 @@ const AppUsageEventSchema = new Schema<IAppUsageEvent>(
     userId: { type: String, required: true, index: true },
     userName: { type: String, trim: true, default: "" },
     email: { type: String, trim: true, lowercase: true, default: "", index: true },
+    mobile: { type: String, trim: true, default: "", index: true },
     userType: { type: String, enum: ["Free", "Premium"], default: "Free", index: true },
     loginMethod: { type: String, trim: true, default: "" },
     deviceId: { type: String, trim: true, default: "", index: true },
     platform: { type: String, trim: true, lowercase: true, default: "unknown", index: true },
     appVersion: { type: String, trim: true, default: "", index: true },
+    deviceBrand: { type: String, trim: true, default: "", index: true },
     deviceModel: { type: String, trim: true, default: "", index: true },
     osVersion: { type: String, trim: true, default: "" },
+    androidVersion: { type: String, trim: true, default: "", index: true },
+    screenResolution: { type: String, trim: true, default: "" },
+    networkType: { type: String, trim: true, default: "", index: true },
+    ramGb: { type: Number },
+    batteryLevel: { type: Number },
+    batteryCharging: { type: Boolean },
+    rootedDevice: { type: Boolean, default: false },
+    isVirtualDevice: { type: Boolean, default: false },
+    ipAddress: { type: String, trim: true, default: "" },
     eventType: { type: String, required: true, trim: true, index: true },
     screen: { type: String, trim: true, default: "", index: true },
     previousScreen: { type: String, trim: true, default: "" },

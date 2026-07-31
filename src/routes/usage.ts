@@ -46,8 +46,17 @@ const analyticsEventSchema = z.object({
     deviceId: z.string().trim().max(160).optional().default(""),
     platform: z.string().trim().max(40).optional().default("unknown"),
     appVersion: z.string().trim().max(80).optional().default(""),
+    deviceBrand: z.string().trim().max(120).optional().default(""),
     deviceModel: z.string().trim().max(160).optional().default(""),
     osVersion: z.string().trim().max(80).optional().default(""),
+    androidVersion: z.string().trim().max(80).optional().default(""),
+    screenResolution: z.string().trim().max(80).optional().default(""),
+    networkType: z.string().trim().max(80).optional().default(""),
+    ramGb: z.coerce.number().min(0).max(1024).nullable().optional(),
+    batteryLevel: z.coerce.number().min(0).max(100).nullable().optional(),
+    batteryCharging: z.boolean().optional(),
+    rootedDevice: z.boolean().optional(),
+    isVirtualDevice: z.boolean().optional(),
   }).optional().default({}),
 });
 
@@ -132,13 +141,28 @@ function publicUserSnapshot(req: AuthenticatedRequest) {
     userId: String(req.userId || ""),
     userName: user?.name || "",
     email,
+    mobile: String(user?.mobile || "").trim(),
     userType: user?.isPremium ? "Premium" as const : "Free" as const,
     loginMethod,
   };
 }
 
+function requestIpAddress(req: AuthenticatedRequest) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return forwarded || req.ip || req.socket?.remoteAddress || "";
+}
+
+function sessionStatusFromEvents(events: Array<{ eventType?: string; action?: string }>) {
+  const text = events.map((event) => `${event.eventType || ""} ${event.action || ""}`).join(" ");
+  if (/crash|native crash|js error/i.test(text)) return "Crashed";
+  if (/forceclose|unexpected|closed unexpectedly/i.test(text)) return "Force Closed";
+  if (/sessionend|app close|logout|background/i.test(text)) return "Completed";
+  return "Active";
+}
+
 async function persistEvents(req: AuthenticatedRequest, rawEvents: unknown[]) {
   const user = publicUserSnapshot(req);
+  const ipAddress = requestIpAddress(req);
   const parsedEvents = rawEvents.map((item) => analyticsEventSchema.parse(item));
   const now = new Date();
   const events = parsedEvents.map((event) => ({
@@ -161,8 +185,18 @@ async function persistEvents(req: AuthenticatedRequest, rawEvents: unknown[]) {
     deviceId: event.device?.deviceId || "",
     platform: String(event.device?.platform || "unknown").toLowerCase(),
     appVersion: event.device?.appVersion || "",
+    deviceBrand: event.device?.deviceBrand || "",
     deviceModel: event.device?.deviceModel || "",
     osVersion: event.device?.osVersion || "",
+    androidVersion: event.device?.androidVersion || "",
+    screenResolution: event.device?.screenResolution || "",
+    networkType: event.device?.networkType || "",
+    ramGb: event.device?.ramGb ?? undefined,
+    batteryLevel: event.device?.batteryLevel ?? undefined,
+    batteryCharging: event.device?.batteryCharging,
+    rootedDevice: Boolean(event.device?.rootedDevice),
+    isVirtualDevice: Boolean(event.device?.isVirtualDevice),
+    ipAddress,
   }));
 
   try {
@@ -194,6 +228,9 @@ async function persistEvents(req: AuthenticatedRequest, rawEvents: unknown[]) {
     const screenEvents = ordered.filter((event: any) => event.eventType === "ScreenView");
     const clickEvents = ordered.filter((event: any) => String(event.eventType || "").toLowerCase().includes("click"));
     const durationSeconds = ordered.reduce((sum: number, event: any) => sum + Number(event.durationSeconds || 0), 0);
+    const foregroundSeconds = ordered.reduce((sum: number, event: any) => sum + Number(event.metadata?.foregroundSeconds || event.durationSeconds || 0), 0);
+    const backgroundSeconds = ordered.reduce((sum: number, event: any) => sum + Number(event.metadata?.backgroundSeconds || 0), 0);
+    const status = sessionStatusFromEvents(ordered);
     await AppUsageSession.findOneAndUpdate(
       { sessionId },
       {
@@ -202,20 +239,33 @@ async function persistEvents(req: AuthenticatedRequest, rawEvents: unknown[]) {
           userId: latestUserEvent.userId || user.userId,
           userName: latestUserEvent.userName || user.userName,
           email: String(latestUserEvent.email || user.email || "").trim().toLowerCase(),
+          mobile: latestUserEvent.mobile || user.mobile,
           userType: latestUserEvent.userType || user.userType,
           loginMethod: latestUserEvent.loginMethod || user.loginMethod,
           deviceId: first.deviceId,
           platform: first.platform,
           appVersion: first.appVersion,
+          deviceBrand: first.deviceBrand,
           deviceModel: first.deviceModel,
           osVersion: first.osVersion,
+          androidVersion: first.androidVersion,
+          screenResolution: first.screenResolution,
+          networkType: first.networkType,
+          ramGb: first.ramGb,
+          batteryLevel: first.batteryLevel,
+          batteryCharging: first.batteryCharging,
+          rootedDevice: first.rootedDevice,
+          isVirtualDevice: first.isVirtualDevice,
+          ipAddress: first.ipAddress,
+          status,
           startedAt: first.timestamp,
           entryScreen: first.screen,
           endedAt: last.timestamp,
           exitScreen: last.screen,
           lastActiveAt: last.timestamp,
           durationSeconds,
-          foregroundSeconds: durationSeconds,
+          foregroundSeconds: Math.max(durationSeconds, foregroundSeconds),
+          backgroundSeconds,
           screenViews: screenEvents.length,
           clicks: clickEvents.length,
         },
