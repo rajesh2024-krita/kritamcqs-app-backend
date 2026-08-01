@@ -23,26 +23,37 @@ function normalizePriority(priority?: unknown[]) {
   return [...configured, ...DEFAULT_RANKING_PRIORITY.filter((item) => !configured.includes(item))];
 }
 
-function compareAttempts(a: any, b: any, priority: string[]) {
+function rankingWeight(weights: any, key: string) {
+  const value = typeof weights?.get === "function" ? weights.get(key) : weights?.[key];
+  const numeric = Number(value ?? 1);
+  return Number.isFinite(numeric) ? numeric : 1;
+}
+
+function weightedCompare(value: number, weights: any, key: string) {
+  const weight = rankingWeight(weights, key);
+  return weight === 0 ? 0 : value * Math.abs(weight);
+}
+
+function compareAttempts(a: any, b: any, priority: string[], weights: any = {}) {
   for (const key of priority) {
-    if (key === "marks" && Number(b.score) !== Number(a.score)) return Number(b.score) - Number(a.score);
+    if (key === "marks" && Number(b.score) !== Number(a.score)) return weightedCompare(Number(b.score) - Number(a.score), weights, key);
     if (key === "negativeMarks" && Number(a.negativeMarksApplied) !== Number(b.negativeMarksApplied)) {
-      return Number(a.negativeMarksApplied) - Number(b.negativeMarksApplied);
+      return weightedCompare(Number(a.negativeMarksApplied) - Number(b.negativeMarksApplied), weights, key);
     }
-    if (key === "totalTime" && Number(a.totalTimeSeconds) !== Number(b.totalTimeSeconds)) return Number(a.totalTimeSeconds) - Number(b.totalTimeSeconds);
+    if (key === "totalTime" && Number(a.totalTimeSeconds) !== Number(b.totalTimeSeconds)) return weightedCompare(Number(a.totalTimeSeconds) - Number(b.totalTimeSeconds), weights, key);
     if (key === "averageTimePerQuestion" && Number(a.averageTimePerQuestion) !== Number(b.averageTimePerQuestion)) {
-      return Number(a.averageTimePerQuestion) - Number(b.averageTimePerQuestion);
+      return weightedCompare(Number(a.averageTimePerQuestion) - Number(b.averageTimePerQuestion), weights, key);
     }
-    if (key === "accuracy" && Number(b.accuracy) !== Number(a.accuracy)) return Number(b.accuracy) - Number(a.accuracy);
+    if (key === "accuracy" && Number(b.accuracy) !== Number(a.accuracy)) return weightedCompare(Number(b.accuracy) - Number(a.accuracy), weights, key);
     if (key === "submissionTime") {
       const aTime = new Date(a.submittedAt || a.autoSubmittedAt || a.updatedAt || 0).getTime();
       const bTime = new Date(b.submittedAt || b.autoSubmittedAt || b.updatedAt || 0).getTime();
-      if (aTime !== bTime) return aTime - bTime;
+      if (aTime !== bTime) return weightedCompare(aTime - bTime, weights, key);
     }
     if (key === "attendance") {
       const aAttendance = a.startedAt ? 1 : 0;
       const bAttendance = b.startedAt ? 1 : 0;
-      if (aAttendance !== bAttendance) return bAttendance - aAttendance;
+      if (aAttendance !== bAttendance) return weightedCompare(bAttendance - aAttendance, weights, key);
     }
   }
   return String(a.userId).localeCompare(String(b.userId));
@@ -108,6 +119,7 @@ export async function scoreCompetitionAttempt(competition: any, answers: any[], 
 
 async function upsertScopeEntries({ competition, attempts, scope, periodKey }: { competition: any; attempts: any[]; scope: string; periodKey: string }) {
   const priority = normalizePriority(competition.leaderboard?.rankingPriority);
+  const weights = competition.leaderboard?.rankingWeights || {};
   const registrations = await NationalCompetitionRegistration.find({ competitionId: String(competition._id) }).lean();
   const registrationMap = new Map(registrations.map((item: any) => [String(item.userId), item]));
   const users = await User.find({ _id: { $in: attempts.map((attempt) => attempt.userId).filter(Boolean) } }).select("_id name email mobile").lean();
@@ -130,7 +142,7 @@ async function upsertScopeEntries({ competition, attempts, scope, periodKey }: {
 
   const writes: any[] = [];
   groups.forEach((groupAttempts) => {
-    groupAttempts.sort((a, b) => compareAttempts(a, b, priority));
+    groupAttempts.sort((a, b) => compareAttempts(a, b, priority, weights));
     groupAttempts.forEach((attempt, index) => {
       const registration = registrationMap.get(String(attempt.userId));
       const user = userMap.get(String(attempt.userId));
@@ -156,7 +168,7 @@ async function upsertScopeEntries({ competition, attempts, scope, periodKey }: {
               accuracy: attempt.accuracy,
               submittedAt: attempt.submittedAt || attempt.autoSubmittedAt,
               attendanceScore: attempt.startedAt ? 1 : 0,
-              tieBreakSnapshot: { priority, refreshedAt: new Date().toISOString() },
+              tieBreakSnapshot: { priority, weights, refreshedAt: new Date().toISOString() },
             },
           },
           upsert: true,

@@ -3,6 +3,7 @@ import {
   NationalCompetition,
   NationalCompetitionAttempt,
   NationalCompetitionAuditLog,
+  NationalCompetitionNotification,
   NationalCompetitionRegistration,
   NationalCompetitionReward,
   NationalLeaderboardEntry,
@@ -18,6 +19,10 @@ const router: IRouter = Router();
 
 function clientIp(req: AuthenticatedRequest) {
   return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
+}
+
+function requestDeviceId(req: AuthenticatedRequest) {
+  return String(req.body?.deviceId || req.headers["x-device-id"] || "").trim();
 }
 
 function serializeCompetition(item: any, extras: Record<string, unknown> = {}) {
@@ -72,7 +77,7 @@ function eligibilityCheck(competition: any, user: any, body: any, existingCount:
 
 router.get("/", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   const examType = String(req.query["examType"] || req.user?.examMode || "BOTH").toUpperCase();
-  const filters: Record<string, unknown> = { isActive: true, status: { $ne: "draft" } };
+  const filters: Record<string, unknown> = { isActive: true, isPublished: true, isEnabled: true, status: { $nin: ["draft", "cancelled"] } };
   if (examType !== "BOTH") filters.examType = { $in: [examType, "BOTH"] };
   const competitions = await NationalCompetition.find(filters).sort({ startsAt: 1 }).limit(50);
   const registrations = await NationalCompetitionRegistration.find({
@@ -97,9 +102,57 @@ router.get("/me/history/results", requireAuth, async (req: AuthenticatedRequest,
   res.json({ success: true, data: attempts });
 });
 
+router.get("/me/rewards", requireAuth, async (req: AuthenticatedRequest, res) => {
+  const ranks = await NationalLeaderboardEntry.find({ userId: req.userId!, rank: { $gt: 0 } }).sort({ updatedAt: -1 }).limit(200).lean();
+  const competitionIds = [...new Set(ranks.map((rank: any) => String(rank.competitionId)))];
+  const rewards = await NationalCompetitionReward.find({
+    competitionId: { $in: competitionIds },
+    approvalStatus: { $in: ["approved", "distributed"] },
+  }).sort({ rankFrom: 1 }).lean();
+  const earned = ranks.flatMap((rank: any) =>
+    rewards
+      .filter((reward: any) => String(reward.competitionId) === String(rank.competitionId) && Number(rank.rank) >= Number(reward.rankFrom) && Number(rank.rank) <= Number(reward.rankTo))
+      .map((reward: any) => ({ ...reward, rank: rank.rank, scope: rank.scope, competitionId: rank.competitionId })),
+  );
+  res.json({ success: true, data: earned });
+});
+
+router.get("/me/notifications", requireAuth, async (req: AuthenticatedRequest, res) => {
+  const registrations = await NationalCompetitionRegistration.find({ userId: req.userId!, status: { $in: ["approved", "locked", "pending"] } }).select("competitionId");
+  const competitionIds = registrations.map((item: any) => String(item.competitionId));
+  const notifications = await NationalCompetitionNotification.find({
+    $or: [{ competitionId: { $in: competitionIds } }, { audience: "all" }],
+    status: { $in: ["scheduled", "sent"] },
+  }).sort({ scheduledAt: -1, createdAt: -1 }).limit(50);
+  res.json({ success: true, data: notifications });
+});
+
+router.get("/profile/:userId", requireAuth, async (req: AuthenticatedRequest, res) => {
+  const userId = req.params["userId"] === "me" ? req.userId! : req.params["userId"];
+  const [attempts, bestNational, bestState, rewards] = await Promise.all([
+    NationalCompetitionAttempt.find({ userId, status: { $in: ["submitted", "auto_submitted"] } }).sort({ submittedAt: -1 }).limit(20),
+    NationalLeaderboardEntry.findOne({ userId, scope: "national" }).sort({ rank: 1 }),
+    NationalLeaderboardEntry.findOne({ userId, scope: "state" }).sort({ rank: 1 }),
+    NationalLeaderboardEntry.countDocuments({ userId, rank: { $lte: 10 } }),
+  ]);
+  const averageScore = attempts.length ? Math.round((attempts.reduce((sum: number, item: any) => sum + Number(item.score || 0), 0) / attempts.length) * 100) / 100 : 0;
+  res.json({
+    success: true,
+    data: {
+      userId,
+      submittedAttempts: attempts.length,
+      averageScore,
+      bestNationalRank: bestNational?.rank || null,
+      bestStateRank: bestState?.rank || null,
+      topTenFinishes: rewards,
+      recentAttempts: attempts,
+    },
+  });
+});
+
 router.get("/:id", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   const competition = await NationalCompetition.findById(req.params["id"]);
-  if (!competition || !competition.isActive) return res.status(404).json({ error: "competition_not_found", message: "Competition not found" });
+  if (!competition || !competition.isActive || !competition.isPublished || !competition.isEnabled) return res.status(404).json({ error: "competition_not_found", message: "Competition not found" });
   const [registration, rewards] = await Promise.all([
     getRegistration(String(competition._id), req.userId!),
     NationalCompetitionReward.find({ competitionId: String(competition._id) }).sort({ rankFrom: 1 }),
@@ -109,7 +162,7 @@ router.get("/:id", requireAuth, requireOnboardingComplete, async (req: Authentic
 
 router.post("/:id/register", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   const competition = await NationalCompetition.findById(req.params["id"]);
-  if (!competition || !competition.isActive) return res.status(404).json({ error: "competition_not_found", message: "Competition not found" });
+  if (!competition || !competition.isActive || !competition.isPublished || !competition.isEnabled) return res.status(404).json({ error: "competition_not_found", message: "Competition not found" });
   const now = Date.now();
   if (now < new Date(competition.registrationOpensAt).getTime() || now > new Date(competition.registrationClosesAt).getTime()) {
     return res.status(403).json({ error: "registration_closed", message: "Registration is not open." });
@@ -127,7 +180,7 @@ router.post("/:id/register", requireAuth, requireOnboardingComplete, async (req:
         state: eligibility.state,
         district: eligibility.district,
         school: String(req.body?.school || req.user?.school || "").trim(),
-        deviceId: String(req.body?.deviceId || req.headers["x-device-id"] || "").trim(),
+        deviceId: requestDeviceId(req),
         eligibilitySnapshot: { premiumRequired: competition.eligibility?.premiumRequired, checkedAt: new Date().toISOString() },
       },
       $set: { status, approvedAt: status === "approved" ? new Date() : undefined },
@@ -140,7 +193,7 @@ router.post("/:id/register", requireAuth, requireOnboardingComplete, async (req:
 
 router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   const competition = await NationalCompetition.findById(req.params["id"]);
-  if (!competition || !competition.isActive) return res.status(404).json({ error: "competition_not_found", message: "Competition not found" });
+  if (!competition || !competition.isActive || !competition.isPublished || !competition.isEnabled) return res.status(404).json({ error: "competition_not_found", message: "Competition not found" });
   const registration = await getRegistration(String(competition._id), req.userId!);
   if (!registration || !["approved", "locked"].includes(registration.status)) return res.status(403).json({ error: "not_registered", message: "Registration approval is required." });
   const now = Date.now();
@@ -148,7 +201,15 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
   if (now > new Date(competition.endsAt).getTime()) return res.status(403).json({ error: "competition_closed", message: "Competition window is closed." });
   const existingSubmitted = await NationalCompetitionAttempt.exists({ competitionId: String(competition._id), userId: req.userId!, status: { $in: ["submitted", "auto_submitted"] } });
   if (existingSubmitted && competition.security?.oneAttemptOnly !== false) return res.status(409).json({ error: "attempt_already_submitted", message: "Only one attempt is allowed." });
-  const deviceId = String(req.body?.deviceId || req.headers["x-device-id"] || "").trim();
+  const deviceId = requestDeviceId(req);
+  if (competition.security?.deviceValidation !== false && registration.deviceId && deviceId && registration.deviceId !== deviceId) {
+    await NationalCompetitionAuditLog.create({ competitionId: String(competition._id), actorId: req.userId!, actorRole: "student", action: "device_mismatch_start", ipAddress: clientIp(req), metadata: { registeredDevice: registration.deviceId, attemptedDevice: deviceId } });
+    return res.status(403).json({ error: "device_mismatch", message: "This competition is locked to the registered device." });
+  }
+  if (competition.security?.deviceValidation !== false && !registration.deviceId && deviceId) {
+    registration.deviceId = deviceId;
+    await registration.save();
+  }
   const attempt = await NationalCompetitionAttempt.findOneAndUpdate(
     { competitionId: String(competition._id), userId: req.userId! },
     {
@@ -172,8 +233,15 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
 });
 
 router.patch("/:id/attempt/:attemptId/autosave", requireAuth, async (req: AuthenticatedRequest, res) => {
-  const attempt = await NationalCompetitionAttempt.findOne({ _id: req.params["attemptId"], competitionId: req.params["id"], userId: req.userId! });
+  const [competition, attempt] = await Promise.all([
+    NationalCompetition.findById(req.params["id"]),
+    NationalCompetitionAttempt.findOne({ _id: req.params["attemptId"], competitionId: req.params["id"], userId: req.userId! }),
+  ]);
   if (!attempt || attempt.status !== "in_progress") return res.status(404).json({ error: "attempt_not_found", message: "Active attempt not found" });
+  const deviceId = requestDeviceId(req);
+  if (competition?.security?.deviceValidation !== false && attempt.deviceId && deviceId && attempt.deviceId !== deviceId) {
+    return res.status(403).json({ error: "device_mismatch", message: "Autosave rejected for a different device." });
+  }
   attempt.answers = Array.isArray(req.body?.answers) ? req.body.answers : attempt.answers;
   attempt.totalTimeSeconds = Math.max(Number(req.body?.totalTimeSeconds || attempt.totalTimeSeconds || 0), 0);
   attempt.lastAutosavedAt = new Date();
@@ -187,6 +255,15 @@ router.post("/:id/attempt/:attemptId/submit", requireAuth, async (req: Authentic
     NationalCompetitionAttempt.findOne({ _id: req.params["attemptId"], competitionId: req.params["id"], userId: req.userId! }),
   ]);
   if (!competition || !attempt || !["in_progress", "not_started"].includes(attempt.status)) return res.status(404).json({ error: "attempt_not_found", message: "Submittable attempt not found" });
+  const deviceId = requestDeviceId(req);
+  if (competition.security?.deviceValidation !== false && attempt.deviceId && deviceId && attempt.deviceId !== deviceId) {
+    return res.status(403).json({ error: "device_mismatch", message: "Submission rejected for a different device." });
+  }
+  const now = Date.now();
+  const closeAt = new Date(competition.endsAt).getTime();
+  if (now > closeAt + 30000 && req.body?.auto !== true) {
+    return res.status(403).json({ error: "competition_closed", message: "Competition window is closed. Please reconnect to auto-submit." });
+  }
   const answers = Array.isArray(req.body?.answers) ? req.body.answers : attempt.answers;
   const maxSeconds = Number(competition.durationMinutes || 0) * 60;
   const submittedTime = req.body?.totalTimeSeconds ?? req.body?.timeTaken ?? attempt.totalTimeSeconds ?? 0;
