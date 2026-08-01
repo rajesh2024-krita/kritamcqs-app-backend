@@ -27,6 +27,8 @@ import {
   PushDeviceToken,
   SupportTicket,
   Test,
+  NationalCompetitionRegistration,
+  NationalLeaderboardEntry,
 } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { z } from "zod";
@@ -46,6 +48,7 @@ const UpdatePreferencesBody = z.object({
   mobile: z.string().optional(),
   country: z.string().optional(),
   state: z.string().optional(),
+  district: z.string().optional(),
   city: z.string().optional(),
   userType: z.string().optional(),
   profileImage: z.string().optional(),
@@ -119,6 +122,7 @@ function userResponse(user: any) {
     migratedFromOldApp: u.migratedFromOldApp,
     country: u.country,
     state: u.state,
+    district: u.district,
     city: u.city,
     userType: u.userType,
     profileImage: u.profileImage,
@@ -647,10 +651,15 @@ router.post("/preferences", requireAuth, async (req: AuthenticatedRequest, res) 
     }
     if (body.country !== undefined) updates["country"] = body.country;
     if (body.state !== undefined) updates["state"] = body.state;
+    if (body.district !== undefined) updates["district"] = body.district;
     if (body.city !== undefined) updates["city"] = body.city;
     if (body.userType !== undefined) updates["userType"] = body.userType;
     if (body.profileImage !== undefined) updates["profileImage"] = body.profileImage;
-    if (body.name !== undefined && String(body.name || "").trim().length >= 2 && (body.email === undefined || String(body.email || "").trim())) {
+    const nextName = body.name !== undefined ? String(body.name || "").trim() : String(req.user?.name || "").trim();
+    const nextEmail = body.email !== undefined ? String(body.email || "").trim() : String(req.user?.email || "").trim();
+    const nextState = body.state !== undefined ? String(body.state || "").trim() : String(req.user?.state || "").trim();
+    const nextDistrict = body.district !== undefined ? String(body.district || "").trim() : String((req.user as any)?.district || "").trim();
+    if (nextName.length >= 2 && nextEmail && nextState && nextDistrict) {
       updates["requiresProfileCompletion"] = false;
     }
 
@@ -666,6 +675,14 @@ router.post("/preferences", requireAuth, async (req: AuthenticatedRequest, res) 
     if (!updated) {
       res.status(404).json({ error: "not_found", message: "User not found" });
       return;
+    }
+
+    if ((body.state !== undefined || body.district !== undefined) && updated.state && (updated as any).district) {
+      const locationUpdate = { state: updated.state || "", district: (updated as any).district || "" };
+      await Promise.all([
+        NationalCompetitionRegistration.updateMany({ userId: req.userId! }, { $set: locationUpdate }),
+        NationalLeaderboardEntry.updateMany({ userId: req.userId! }, { $set: locationUpdate }),
+      ]);
     }
 
     res.json(userResponse(updated));

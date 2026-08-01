@@ -75,6 +75,7 @@ function userResponse(user: any) {
     requiresProfileCompletion: Boolean(u.requiresProfileCompletion),
     country: u.country,
     state: u.state,
+    district: u.district,
     city: u.city,
     userType: u.userType,
     profileImage: u.profileImage,
@@ -196,6 +197,10 @@ function normalizePassword(input: unknown) {
   return strongEnough && password.length <= 128 ? password : null;
 }
 
+function normalizeLocation(input: unknown) {
+  return String(input || "").trim().replace(/\s+/g, " ").slice(0, 120);
+}
+
 function normalizeOtp(input: string) {
   const otp = input.replace(/\D/g, "");
   return /^\d{6}$/.test(otp) ? otp : null;
@@ -266,8 +271,10 @@ router.post("/register", async (req, res) => {
     const email = normalizeEmail(req.body?.email);
     const password = normalizePassword(req.body?.password);
     const name = String(req.body?.name || "").trim();
-    if (!email || !password || name.length < 2) {
-      res.status(400).json({ error: "invalid_registration", message: "Enter a valid name, email, and password." });
+    const state = normalizeLocation(req.body?.state);
+    const district = normalizeLocation(req.body?.district);
+    if (!email || !password || name.length < 2 || state.length < 2 || district.length < 2) {
+      res.status(400).json({ error: "invalid_registration", message: "Enter a valid name, email, password, state, and district." });
       return;
     }
     const existing = await User.findOne({ email });
@@ -279,6 +286,8 @@ router.post("/register", async (req, res) => {
       email,
       name,
       passwordHash: hashPassword(password),
+      state,
+      district,
       loginProvider: "EMAIL",
       authTypes: ["email"],
       onboardingComplete: false,
@@ -651,7 +660,7 @@ router.post("/apple", async (req, res) => {
         emailVerified,
         authTypes: ["apple"],
         onboardingComplete: false,
-        requiresProfileCompletion: !name || !email,
+        requiresProfileCompletion: true,
         mobileVerified: false,
         isPremium: false,
         isAdmin: false,
