@@ -8,6 +8,7 @@ import {
   NationalCompetitionReward,
   NationalLeaderboardEntry,
   Question,
+  User,
 } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
@@ -218,6 +219,12 @@ router.post("/:id/register", requireAuth, requireOnboardingComplete, async (req:
   const existingCount = await NationalCompetitionRegistration.countDocuments({ competitionId: String(competition._id), status: { $in: ["approved", "pending", "locked"] } });
   const eligibility = eligibilityCheck(competition, req.user, req.body, existingCount);
   if (!eligibility.ok) return res.status(403).json({ error: eligibility.reason, message: eligibility.message });
+  if (eligibility.state || eligibility.district) {
+    await User.updateOne(
+      { _id: req.userId! },
+      { $set: { state: eligibility.state || "", district: eligibility.district || "" } },
+    );
+  }
   const status = competition.eligibility?.approvalRequired ? "pending" : "approved";
   const registration = await NationalCompetitionRegistration.findOneAndUpdate(
     { competitionId: String(competition._id), userId: req.userId! },
