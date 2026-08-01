@@ -235,7 +235,16 @@ router.get("/:id", requireAuth, requireOnboardingComplete, async (req: Authentic
     getRegistration(String(competition._id), req.userId!),
     NationalCompetitionReward.find({ competitionId: String(competition._id) }).sort({ rankFrom: 1 }),
   ]);
-  res.json({ success: true, data: serializeCompetition(competition, { registered: Boolean(registration), registration, rewards, serverState: publicServerState(competition) }) });
+  res.json({
+    success: true,
+    data: serializeCompetition(competition, {
+      registered: Boolean(registration),
+      registrationStatus: registration?.status || "not_registered",
+      registration,
+      rewards,
+      serverState: publicServerState(competition),
+    }),
+  });
 });
 
 router.post("/:id/register", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
