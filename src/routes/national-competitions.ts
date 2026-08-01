@@ -77,13 +77,35 @@ function eligibilityCheck(competition: any, user: any, body: any, existingCount:
   const eligibility = competition.eligibility || {};
   const state = String(body?.state || user?.state || "").trim();
   const district = String(body?.district || user?.district || "").trim();
+  const allowedStates = Array.isArray(eligibility.allowedStates) ? eligibility.allowedStates : [];
+  const allowedDistricts = Array.isArray(eligibility.allowedDistricts) ? eligibility.allowedDistricts : [];
+  const stateAllowed = !allowedStates.length || allowedStates.some((item: unknown) => sameRegionName(item, state));
+  const districtAllowed = !allowedDistricts.length || allowedDistricts.some((item: unknown) => sameRegionName(item, district));
   if (eligibility.premiumRequired && !user?.isPremium) return { ok: false, reason: "premium_required", message: "Premium membership is required." };
   if (eligibility.participantLimit > 0 && existingCount >= eligibility.participantLimit) {
     return { ok: false, reason: "participant_limit_reached", message: "Participant limit has been reached." };
   }
-  if (eligibility.allowedStates?.length && !eligibility.allowedStates.includes(state)) return { ok: false, reason: "state_not_allowed", message: "Your state is not eligible." };
-  if (eligibility.allowedDistricts?.length && !eligibility.allowedDistricts.includes(district)) return { ok: false, reason: "district_not_allowed", message: "Your district is not eligible." };
+  if (!stateAllowed) return { ok: false, reason: "state_not_allowed", message: `${state || "Your state"} is not eligible for this competition.` };
+  if (!districtAllowed) return { ok: false, reason: "district_not_allowed", message: `${district || "Your district"} is not eligible for this competition.` };
   return { ok: true, state, district };
+}
+
+function normalizeRegionName(value: unknown) {
+  return String(value || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/\b(dist|district)\b/gi, "")
+    .replace(/[^a-z0-9]+/gi, " ")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function sameRegionName(a: unknown, b: unknown) {
+  const left = normalizeRegionName(a);
+  const right = normalizeRegionName(b);
+  return Boolean(left && right && left === right);
 }
 
 function publicServerState(competition: any) {
