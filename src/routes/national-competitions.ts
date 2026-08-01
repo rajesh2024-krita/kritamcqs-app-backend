@@ -26,6 +26,16 @@ function requestDeviceId(req: AuthenticatedRequest) {
   return String(req.body?.deviceId || req.headers["x-device-id"] || "").trim();
 }
 
+function formatCompetitionDate(value: Date | string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
 function serializeCompetition(item: any, extras: Record<string, unknown> = {}) {
   const raw = typeof item?.toJSON === "function" ? item.toJSON() : item;
   const now = Date.now();
@@ -210,8 +220,21 @@ router.post("/:id/register", requireAuth, requireOnboardingComplete, async (req:
   const competition = await NationalCompetition.findById(req.params["id"]);
   if (!competition || !competition.isActive || !competition.isPublished || !competition.isEnabled) return res.status(404).json({ error: "competition_not_found", message: "Competition not found" });
   const now = Date.now();
-  if (now < new Date(competition.registrationOpensAt).getTime() || now > new Date(competition.registrationClosesAt).getTime()) {
-    return res.status(403).json({ error: "registration_closed", message: "Registration is not open." });
+  const registrationOpensAt = new Date(competition.registrationOpensAt).getTime();
+  const registrationClosesAt = new Date(competition.registrationClosesAt).getTime();
+  if (now < registrationOpensAt) {
+    return res.status(403).json({
+      error: "registration_not_started",
+      message: `Registration opens on ${formatCompetitionDate(competition.registrationOpensAt)}.`,
+      data: { registrationOpensAt: competition.registrationOpensAt, registrationClosesAt: competition.registrationClosesAt },
+    });
+  }
+  if (now > registrationClosesAt) {
+    return res.status(403).json({
+      error: "registration_closed",
+      message: `Registration closed on ${formatCompetitionDate(competition.registrationClosesAt)}.`,
+      data: { registrationOpensAt: competition.registrationOpensAt, registrationClosesAt: competition.registrationClosesAt },
+    });
   }
   if (String(competition.terms || "").trim() && req.body?.acceptedTerms !== true) {
     return res.status(400).json({ error: "terms_required", message: "Please accept the competition terms and conditions." });
