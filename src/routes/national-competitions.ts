@@ -315,6 +315,17 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
   const existingSubmitted = await NationalCompetitionAttempt.exists({ competitionId: String(competition._id), userId: req.userId!, status: { $in: ["submitted", "auto_submitted"] } });
   if (existingSubmitted && competition.security?.oneAttemptOnly !== false) return res.status(409).json({ error: "attempt_already_submitted", message: "Only one attempt is allowed." });
   const deviceId = requestDeviceId(req);
+  const existingInProgressAttempt = await NationalCompetitionAttempt.findOne({ competitionId: String(competition._id), userId: req.userId!, status: "in_progress" });
+  if (competition.security?.deviceValidation !== false && existingInProgressAttempt?.deviceId && deviceId && existingInProgressAttempt.deviceId !== deviceId) {
+    if (isLegacyWebDeviceId(existingInProgressAttempt.deviceId)) {
+      await NationalCompetitionAuditLog.create({ competitionId: String(competition._id), actorId: req.userId!, actorRole: "student", action: "attempt_device_lock_migrated", ipAddress: clientIp(req), metadata: { attemptDevice: existingInProgressAttempt.deviceId, currentDevice: deviceId } });
+      existingInProgressAttempt.deviceId = deviceId;
+      await existingInProgressAttempt.save();
+    } else {
+      await NationalCompetitionAuditLog.create({ competitionId: String(competition._id), actorId: req.userId!, actorRole: "student", action: "device_mismatch_start_attempt", ipAddress: clientIp(req), metadata: { attemptDevice: existingInProgressAttempt.deviceId, currentDevice: deviceId } });
+      return res.status(403).json({ error: "device_mismatch", message: "This competition attempt is locked to the device where it was started." });
+    }
+  }
   if (competition.security?.deviceValidation !== false && registration.deviceId && deviceId && registration.deviceId !== deviceId) {
     if (isLegacyWebDeviceId(registration.deviceId)) {
       await NationalCompetitionAuditLog.create({ competitionId: String(competition._id), actorId: req.userId!, actorRole: "student", action: "device_lock_migrated", ipAddress: clientIp(req), metadata: { registeredDevice: registration.deviceId, attemptedDevice: deviceId } });
@@ -440,7 +451,23 @@ router.post("/:id/attempt/:attemptId/submit", requireAuth, async (req: Authentic
   });
   await attempt.save();
   await refreshCompetitionLeaderboards(String(competition._id));
-  res.json({ success: true, data: attempt, result });
+  res.json({
+    success: true,
+    data: attempt,
+    result,
+    attemptId: String(attempt._id),
+    sessionId: String(attempt._id),
+    score: result.score,
+    accuracy: result.accuracy,
+    timeTaken: result.totalTimeSeconds,
+    totalQuestions: Array.isArray(competition.questionIds) ? competition.questionIds.length : 0,
+    correctCount: result.correctCount,
+    incorrectCount: result.wrongCount,
+    skippedCount: result.skippedCount,
+    maxScore: Number(competition.totalQuestions || competition.questionIds?.length || 0) * Number(competition.marksPerQuestion || 0),
+    completionStatus: req.body?.auto === true ? "Auto Submitted" : "Completed",
+    performanceMessage: "Competition test submitted. Leaderboard ranks will update shortly.",
+  });
 });
 
 router.get("/:id/result", requireAuth, async (req: AuthenticatedRequest, res) => {
