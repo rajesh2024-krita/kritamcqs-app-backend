@@ -26,6 +26,10 @@ function requestDeviceId(req: AuthenticatedRequest) {
   return String(req.body?.deviceId || req.headers["x-device-id"] || "").trim();
 }
 
+function isLegacyWebDeviceId(value: unknown) {
+  return /^web-[a-z0-9-]+$/i.test(String(value || "").trim());
+}
+
 function formatCompetitionDate(value: Date | string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
@@ -312,8 +316,14 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
   if (existingSubmitted && competition.security?.oneAttemptOnly !== false) return res.status(409).json({ error: "attempt_already_submitted", message: "Only one attempt is allowed." });
   const deviceId = requestDeviceId(req);
   if (competition.security?.deviceValidation !== false && registration.deviceId && deviceId && registration.deviceId !== deviceId) {
-    await NationalCompetitionAuditLog.create({ competitionId: String(competition._id), actorId: req.userId!, actorRole: "student", action: "device_mismatch_start", ipAddress: clientIp(req), metadata: { registeredDevice: registration.deviceId, attemptedDevice: deviceId } });
-    return res.status(403).json({ error: "device_mismatch", message: "This competition is locked to the registered device." });
+    if (isLegacyWebDeviceId(registration.deviceId)) {
+      await NationalCompetitionAuditLog.create({ competitionId: String(competition._id), actorId: req.userId!, actorRole: "student", action: "device_lock_migrated", ipAddress: clientIp(req), metadata: { registeredDevice: registration.deviceId, attemptedDevice: deviceId } });
+      registration.deviceId = deviceId;
+      await registration.save();
+    } else {
+      await NationalCompetitionAuditLog.create({ competitionId: String(competition._id), actorId: req.userId!, actorRole: "student", action: "device_mismatch_start", ipAddress: clientIp(req), metadata: { registeredDevice: registration.deviceId, attemptedDevice: deviceId } });
+      return res.status(403).json({ error: "device_mismatch", message: "This competition is locked to the registered device." });
+    }
   }
   if (competition.security?.deviceValidation !== false && !registration.deviceId && deviceId) {
     registration.deviceId = deviceId;
@@ -348,6 +358,21 @@ router.get("/:id/attempt/resume", requireAuth, requireOnboardingComplete, async 
     NationalCompetitionAttempt.findOne({ competitionId: req.params["id"], userId: req.userId!, status: "in_progress" }),
   ]);
   if (!competition || !attempt) return res.status(404).json({ error: "resume_not_found", message: "No active competition attempt found." });
+  const deviceId = requestDeviceId(req);
+  if (competition.security?.deviceValidation !== false && attempt.deviceId && deviceId && attempt.deviceId !== deviceId) {
+    if (isLegacyWebDeviceId(attempt.deviceId)) {
+      await NationalCompetitionAuditLog.create({ competitionId: String(competition._id), actorId: req.userId!, actorRole: "student", action: "attempt_device_lock_migrated", ipAddress: clientIp(req), metadata: { attemptDevice: attempt.deviceId, currentDevice: deviceId } });
+      attempt.deviceId = deviceId;
+      await attempt.save();
+    } else {
+      await NationalCompetitionAuditLog.create({ competitionId: String(competition._id), actorId: req.userId!, actorRole: "student", action: "device_mismatch_resume", ipAddress: clientIp(req), metadata: { attemptDevice: attempt.deviceId, currentDevice: deviceId } });
+      return res.status(403).json({ error: "device_mismatch", message: "This competition attempt is locked to the device where it was started." });
+    }
+  }
+  if (competition.security?.deviceValidation !== false && !attempt.deviceId && deviceId) {
+    attempt.deviceId = deviceId;
+    await attempt.save();
+  }
   const maxSeconds = Number(competition.durationMinutes || 0) * 60;
   const elapsedByClock = attempt.startedAt ? Math.max(0, Math.floor((Date.now() - new Date(attempt.startedAt).getTime()) / 1000)) : Number(attempt.totalTimeSeconds || 0);
   const elapsed = Math.min(maxSeconds, Math.max(Number(attempt.totalTimeSeconds || 0), elapsedByClock));
