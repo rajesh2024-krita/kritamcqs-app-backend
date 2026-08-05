@@ -2758,7 +2758,44 @@ function assertValidTemplatePayload(payload: any) {
       details: { invalidVariables: validation.invalid, allowedVariables: validation.allowed },
     });
   }
+  if (payload.ctaEnabled) {
+    const ctaText = String(payload.ctaText || "").trim();
+    const ctaUrl = String(payload.ctaUrl || "").trim();
+    if (!ctaText) throw Object.assign(new Error("CTA button text is required when CTA is enabled"), { statusCode: 400 });
+    if (!ctaUrl) throw Object.assign(new Error("CTA URL / Deep Link is required when CTA is enabled"), { statusCode: 400 });
+    if (!isValidCtaUrl(ctaUrl)) throw Object.assign(new Error("CTA URL / Deep Link must be a valid HTTPS URL or custom deep link"), { statusCode: 400 });
+  }
   return validation;
+}
+
+function isValidCtaUrl(value: unknown) {
+  const url = String(value || "").trim();
+  if (!url || /\s/.test(url)) return false;
+  if (/^https?:\/\//i.test(url)) {
+    try {
+      const parsed = new URL(url);
+      return Boolean(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
+  return /^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(url);
+}
+
+function normalizeCtaPayload(body: Record<string, any>) {
+  const openIn = ["app", "website", "auto"].includes(String(body.openIn)) ? String(body.openIn) : "auto";
+  const buttonAlignment = ["left", "center", "right"].includes(String(body.buttonAlignment)) ? String(body.buttonAlignment) : "center";
+  const hexOrDefault = (value: unknown, fallback: string) => (/^#[0-9a-f]{6}$/i.test(String(value || "").trim()) ? String(value).trim() : fallback);
+  return {
+    ctaEnabled: Boolean(body.ctaEnabled),
+    ctaText: String(body.ctaText || "").trim(),
+    ctaType: String(body.ctaType || "none").trim() || "none",
+    ctaUrl: String(body.ctaUrl || "").trim(),
+    openIn,
+    buttonColor: hexOrDefault(body.buttonColor, "#2563eb"),
+    buttonTextColor: hexOrDefault(body.buttonTextColor, "#ffffff"),
+    buttonAlignment,
+  };
 }
 
 function templateImportRows(file: Express.Multer.File) {
@@ -2809,6 +2846,16 @@ function templatePayloadFromRow(row: Record<string, unknown>) {
     variables: parseTemplateVariableList(templateCell(row, ["variables", "placeholders"])),
     sampleData,
     isActive: !["false", "0", "no", "inactive"].includes(String(templateCell(row, ["is_active", "active", "status"])).trim().toLowerCase()),
+    ...normalizeCtaPayload({
+      ctaEnabled: ["true", "1", "yes", "enabled"].includes(String(templateCell(row, ["cta_enabled", "ctaenabled"])).trim().toLowerCase()),
+      ctaText: templateCell(row, ["cta_text", "ctatext", "cta_button_text"]),
+      ctaType: templateCell(row, ["cta_type", "ctatype"]),
+      ctaUrl: templateCell(row, ["cta_url", "ctaurl", "deep_link"]),
+      openIn: templateCell(row, ["open_in", "openin"]),
+      buttonColor: templateCell(row, ["button_color", "buttoncolor"]),
+      buttonTextColor: templateCell(row, ["button_text_color", "buttontextcolor"]),
+      buttonAlignment: templateCell(row, ["button_alignment", "buttonalignment"]),
+    }),
   };
 }
 
@@ -3255,6 +3302,7 @@ router.post("/email-templates", wrap(async (req, res) => {
     sampleData: body.sampleData || {},
     isActive: body.isActive !== false,
     isDefault: body.isDefault === true,
+    ...normalizeCtaPayload(body),
     createdBy: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
     updatedBy: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
   });
@@ -3286,6 +3334,16 @@ router.put("/email-templates/:id", wrap(async (req, res) => {
   template.variables = body.variables === undefined ? template.variables : parseTemplateVariableList(body.variables);
   template.sampleData = body.sampleData || template.sampleData || {};
   template.isActive = body.isActive === undefined ? template.isActive : Boolean(body.isActive);
+  Object.assign(template, normalizeCtaPayload({
+    ctaEnabled: body.ctaEnabled === undefined ? template.ctaEnabled : body.ctaEnabled,
+    ctaText: body.ctaText === undefined ? template.ctaText : body.ctaText,
+    ctaType: body.ctaType === undefined ? template.ctaType : body.ctaType,
+    ctaUrl: body.ctaUrl === undefined ? template.ctaUrl : body.ctaUrl,
+    openIn: body.openIn === undefined ? template.openIn : body.openIn,
+    buttonColor: body.buttonColor === undefined ? template.buttonColor : body.buttonColor,
+    buttonTextColor: body.buttonTextColor === undefined ? template.buttonTextColor : body.buttonTextColor,
+    buttonAlignment: body.buttonAlignment === undefined ? template.buttonAlignment : body.buttonAlignment,
+  }));
   template.updatedBy = String((req as any).admin?.name || (req as any).admin?.email || "Admin");
   const validation = assertValidTemplatePayload(template);
   template.variables = validation.used.length ? validation.used : validation.allowed;

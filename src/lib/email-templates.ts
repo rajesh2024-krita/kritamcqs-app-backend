@@ -281,6 +281,14 @@ export function buildTemplateFromDefinition(definition: typeof EMAIL_TEMPLATE_DE
     sampleData: sampleEmailVariables(),
     isActive: true,
     isDefault: true,
+    ctaEnabled: false,
+    ctaText: "",
+    ctaType: "none",
+    ctaUrl: "",
+    openIn: "auto",
+    buttonColor: "#2563eb",
+    buttonTextColor: "#ffffff",
+    buttonAlignment: "center",
     createdBy: "system",
     updatedBy: "system",
   } as any;
@@ -312,6 +320,66 @@ export const COMMON_EMAIL_VARIABLES = [
 
 export function renderTemplate(template: string, values: Record<string, unknown>) {
   return String(template || "").replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_match, key) => String(values[key] ?? ""));
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function isValidEmailCtaUrl(value: unknown) {
+  const url = String(value || "").trim();
+  if (!url || /\s/.test(url)) return false;
+  if (/^https?:\/\//i.test(url)) {
+    try {
+      const parsed = new URL(url);
+      return Boolean(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
+  return /^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(url);
+}
+
+function sanitizeColor(value: unknown, fallback: string) {
+  const color = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : fallback;
+}
+
+function normalizeAlignment(value: unknown) {
+  return ["left", "center", "right"].includes(String(value)) ? String(value) : "center";
+}
+
+export function buildEmailCtaHtml(template: any) {
+  if (!template?.ctaEnabled) return "";
+  const text = String(template.ctaText || "").trim();
+  const href = String(template.ctaUrl || "").trim();
+  if (!text || !isValidEmailCtaUrl(href)) return "";
+
+  const alignment = normalizeAlignment(template.buttonAlignment);
+  const buttonColor = sanitizeColor(template.buttonColor, "#2563eb");
+  const buttonTextColor = sanitizeColor(template.buttonTextColor, "#ffffff");
+
+  return `<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;margin:24px 0 8px 0;"><tr><td align="${alignment}" style="padding:0;text-align:${alignment};"><a href="${escapeHtml(href)}" target="_blank" role="button" style="display:inline-block;background:${buttonColor};color:${buttonTextColor};font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:700;line-height:20px;text-decoration:none;border-radius:6px;padding:13px 22px;border:1px solid ${buttonColor};mso-padding-alt:0;text-align:center;">${escapeHtml(text)}</a></td></tr></table>`;
+}
+
+function appendEmailCta(htmlContent: string, ctaHtml: string) {
+  if (!ctaHtml) return htmlContent;
+  const html = String(htmlContent || "");
+  if (/<\/body\s*>/i.test(html)) return html.replace(/<\/body\s*>/i, `${ctaHtml}</body>`);
+  return `${html}${ctaHtml}`;
+}
+
+function appendTextCta(textContent: string, template: any) {
+  if (!template?.ctaEnabled) return textContent;
+  const text = String(template.ctaText || "").trim();
+  const href = String(template.ctaUrl || "").trim();
+  if (!text || !isValidEmailCtaUrl(href)) return textContent;
+  const current = String(textContent || "").trimEnd();
+  return `${current}${current ? "\n\n" : ""}${text}: ${href}`;
 }
 
 export function normalizeEmailVariables(values: Record<string, unknown> = {}) {
@@ -437,10 +505,19 @@ export function buildTemplatePreview(template: any, variables: Record<string, un
 
 export function renderEmailTemplate(template: any, variables: Record<string, unknown> = {}) {
   const data = normalizeEmailVariables(variables);
+  const htmlContent = renderTemplate(template?.htmlContent || "", data);
+  const textContent = renderTemplate(template?.textContent || "", data);
+  const templateData = typeof template?.toObject === "function" ? template.toObject() : template;
+  const renderedCtaTemplate = {
+    ...(templateData || {}),
+    ctaText: renderTemplate(template?.ctaText || "", data),
+    ctaUrl: renderTemplate(template?.ctaUrl || "", data),
+  };
+  const ctaHtml = buildEmailCtaHtml(renderedCtaTemplate);
   return {
     subject: renderTemplate(template?.subject || "", data),
-    htmlContent: renderTemplate(template?.htmlContent || "", data),
-    textContent: renderTemplate(template?.textContent || "", data),
+    htmlContent: appendEmailCta(htmlContent, ctaHtml),
+    textContent: appendTextCta(textContent, renderedCtaTemplate),
     variables: data,
   };
 }

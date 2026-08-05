@@ -13,6 +13,14 @@ export interface IEmailTemplate extends Document {
   sampleData: Record<string, unknown>;
   isActive: boolean;
   isDefault: boolean;
+  ctaEnabled: boolean;
+  ctaText: string;
+  ctaType: string;
+  ctaUrl: string;
+  openIn: "app" | "website" | "auto";
+  buttonColor: string;
+  buttonTextColor: string;
+  buttonAlignment: "left" | "center" | "right";
   createdBy: string;
   updatedBy: string;
   createdAt: Date;
@@ -23,7 +31,7 @@ const EmailTemplateSchema = new Schema<IEmailTemplate>(
   {
     key: { type: String, required: true, unique: true, index: true },
     name: { type: String, required: true },
-    type: { type: String, required: true, enum: ["forgot_password", "otp_verification", "welcome", "notification", "offer", "announcement", "update", "invoice", "registration", "verification", "subscription", "payment_success", "reminder", "broadcast", "expiry", "helpdesk", "admin_notification"] },
+    type: { type: String, required: true, enum: ["forgot_password", "otp_verification", "welcome", "notification", "offer", "announcement", "update", "invoice", "registration", "verification", "subscription", "payment_success", "reminder", "broadcast", "expiry", "helpdesk", "contact", "admin_notification"] },
     module: { type: String, default: "notification", index: true },
     description: { type: String, default: "" },
     subject: { type: String, required: true },
@@ -33,6 +41,14 @@ const EmailTemplateSchema = new Schema<IEmailTemplate>(
     sampleData: { type: Schema.Types.Mixed, default: {} },
     isActive: { type: Boolean, default: true },
     isDefault: { type: Boolean, default: false },
+    ctaEnabled: { type: Boolean, default: false },
+    ctaText: { type: String, default: "" },
+    ctaType: { type: String, default: "none" },
+    ctaUrl: { type: String, default: "" },
+    openIn: { type: String, enum: ["app", "website", "auto"], default: "auto" },
+    buttonColor: { type: String, default: "#2563eb" },
+    buttonTextColor: { type: String, default: "#ffffff" },
+    buttonAlignment: { type: String, enum: ["left", "center", "right"], default: "center" },
     createdBy: { type: String, default: "" },
     updatedBy: { type: String, default: "" },
   },
