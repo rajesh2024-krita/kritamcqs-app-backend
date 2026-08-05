@@ -81,7 +81,7 @@ function placeholders(user: any, reminder: SubscriptionReminder, config: Reminde
     UserName: String(user?.name || user?.email || user?.mobile || "Learner"),
     PlanName: String(reminder.subscriptionPlan || config.applicablePlan || "Premium Plan"),
     PlanPrice: "",
-    PurchaseLink: "/subscription",
+    PurchaseLink: "https://app.kritamcqs.com/#/subscription",
     SupportEmail: "support@kritamcqs.com",
     CurrentDate: now.toLocaleDateString("en-IN"),
     ExpiryDate: "",
