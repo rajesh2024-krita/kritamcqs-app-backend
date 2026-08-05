@@ -13,6 +13,7 @@ export interface IEmailTemplate extends Document {
   sampleData: Record<string, unknown>;
   isActive: boolean;
   isDefault: boolean;
+  ctaConfigId: string;
   ctaEnabled: boolean;
   ctaText: string;
   ctaType: string;
@@ -41,6 +42,7 @@ const EmailTemplateSchema = new Schema<IEmailTemplate>(
     sampleData: { type: Schema.Types.Mixed, default: {} },
     isActive: { type: Boolean, default: true },
     isDefault: { type: Boolean, default: false },
+    ctaConfigId: { type: String, default: "", index: true },
     ctaEnabled: { type: Boolean, default: false },
     ctaText: { type: String, default: "" },
     ctaType: { type: String, default: "none" },

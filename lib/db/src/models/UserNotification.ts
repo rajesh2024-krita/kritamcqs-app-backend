@@ -22,6 +22,8 @@ export interface IUserNotification extends Document {
   pushStatus?: string;
   pushError?: string;
   emailTemplateKey?: string;
+  ctaConfigId?: string;
+  ctaText?: string;
   sentAt?: Date;
   readAt?: Date;
   createdAt: Date;
@@ -50,6 +52,8 @@ const userNotificationSchema = new Schema<IUserNotification>(
     pushStatus: { type: String, default: "" },
     pushError: { type: String, default: "" },
     emailTemplateKey: { type: String, default: "", index: true },
+    ctaConfigId: { type: String, default: "", index: true },
+    ctaText: { type: String, default: "" },
     sentAt: Date,
     readAt: Date,
   },

@@ -86,6 +86,7 @@ export * from "./models/Invoice";
 export * from "./models/ExamMarkingSettings";
 export * from "./models/NotificationSettings";
 export * from "./models/EmailTemplate";
+export * from "./models/CtaConfig";
 export * from "./models/EmailLog";
 export * from "./models/HelpDeskSettings";
 export * from "./models/UserNotification";

@@ -333,6 +333,7 @@ function escapeHtml(value: unknown) {
 function isValidEmailCtaUrl(value: unknown) {
   const url = String(value || "").trim();
   if (!url || /\s/.test(url)) return false;
+  if (/^\/[^\s]*$/.test(url)) return true;
   if (/^https?:\/\//i.test(url)) {
     try {
       const parsed = new URL(url);
@@ -356,7 +357,8 @@ function normalizeAlignment(value: unknown) {
 export function buildEmailCtaHtml(template: any) {
   if (!template?.ctaEnabled) return "";
   const text = String(template.ctaText || "").trim();
-  const href = String(template.ctaUrl || "").trim();
+  const rawHref = String(template.ctaUrl || "").trim();
+  const href = rawHref.startsWith("/") ? `https://app.kritamcqs.com${rawHref}` : rawHref;
   if (!text || !isValidEmailCtaUrl(href)) return "";
 
   const alignment = normalizeAlignment(template.buttonAlignment);
@@ -376,7 +378,8 @@ function appendEmailCta(htmlContent: string, ctaHtml: string) {
 function appendTextCta(textContent: string, template: any) {
   if (!template?.ctaEnabled) return textContent;
   const text = String(template.ctaText || "").trim();
-  const href = String(template.ctaUrl || "").trim();
+  const rawHref = String(template.ctaUrl || "").trim();
+  const href = rawHref.startsWith("/") ? `https://app.kritamcqs.com${rawHref}` : rawHref;
   if (!text || !isValidEmailCtaUrl(href)) return textContent;
   const current = String(textContent || "").trimEnd();
   return `${current}${current ? "\n\n" : ""}${text}: ${href}`;

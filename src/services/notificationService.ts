@@ -168,13 +168,15 @@ function payloadFromNotification(notification: any): NotificationPayload {
       notificationType: String(notification.type || ""),
       deepLink: String(notification.linkUrl || "/notifications"),
       linkUrl: String(notification.linkUrl || "/notifications"),
+      ctaText: String(notification.ctaText || ""),
+      ctaConfigId: String(notification.ctaConfigId || ""),
       imageUrl: String(notification.imageUrl || ""),
     },
   };
 }
 
 export async function sendPushForUserNotifications(notifications: any[]) {
-  const visibleNotifications = notifications.filter((item) => item && item.visibleInApp !== false);
+  const visibleNotifications = notifications.filter((item) => item && (item.visibleInApp !== false || item.pushStatus === "pending"));
   const result = {
     sentCount: 0,
     successCount: 0,

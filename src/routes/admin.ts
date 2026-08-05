@@ -8,6 +8,7 @@ import * as XLSX from "xlsx";
 import {
   Chapter,
   ChapterPerformance,
+  CtaConfig,
   EmailLog,
   Difficulty,
   EmailTemplate,
@@ -2710,16 +2711,18 @@ function normalizeDeliveryMode(value: unknown) {
   if (["app", "in_app", "notification"].includes(mode)) return "notification";
   if (["email"].includes(mode)) return "email";
   if (["push"].includes(mode)) return "push";
+  if (["app_push", "notification_push", "app+push"].includes(mode)) return "app_push";
   if (["email_push", "email+push"].includes(mode)) return "email_push";
   if (["both", "app_email", "notification_email"].includes(mode)) return "both";
+  if (["all", "app_email_push", "notification_email_push"].includes(mode)) return "all";
   return "notification";
 }
 
 function deliveryFlags(mode: string, settings: any) {
   return {
-    inApp: ["notification", "both"].includes(mode) && settings.inAppEnabled !== false,
-    email: ["email", "both", "email_push"].includes(mode) && settings.emailEnabled !== false,
-    push: ["push", "email_push"].includes(mode),
+    inApp: ["notification", "both", "app_push", "all"].includes(mode) && settings.inAppEnabled !== false,
+    email: ["email", "both", "email_push", "all"].includes(mode) && settings.emailEnabled !== false,
+    push: ["push", "email_push", "app_push", "all"].includes(mode),
   };
 }
 
@@ -2771,6 +2774,7 @@ function assertValidTemplatePayload(payload: any) {
 function isValidCtaUrl(value: unknown) {
   const url = String(value || "").trim();
   if (!url || /\s/.test(url)) return false;
+  if (/^\/[^\s]*$/.test(url)) return true;
   if (/^https?:\/\//i.test(url)) {
     try {
       const parsed = new URL(url);
@@ -2795,6 +2799,49 @@ function normalizeCtaPayload(body: Record<string, any>) {
     buttonColor: hexOrDefault(body.buttonColor, "#2563eb"),
     buttonTextColor: hexOrDefault(body.buttonTextColor, "#ffffff"),
     buttonAlignment,
+  };
+}
+
+function normalizeCtaConfigPayload(body: Record<string, any>) {
+  const cta = normalizeCtaPayload({ ...body, ctaEnabled: true });
+  const channel = ["email", "push", "both"].includes(String(body.channel)) ? String(body.channel) : "both";
+  return {
+    name: String(body.name || "").trim(),
+    description: String(body.description || "").trim(),
+    channel,
+    ctaText: cta.ctaText,
+    ctaType: cta.ctaType,
+    ctaUrl: cta.ctaUrl,
+    openIn: cta.openIn,
+    buttonColor: cta.buttonColor,
+    buttonTextColor: cta.buttonTextColor,
+    buttonAlignment: cta.buttonAlignment,
+    isActive: body.isActive === undefined ? true : Boolean(body.isActive),
+  };
+}
+
+function assertValidCtaConfig(payload: Record<string, any>) {
+  if (!String(payload.name || "").trim()) throw Object.assign(new Error("CTA name is required"), { statusCode: 400 });
+  if (!String(payload.ctaText || "").trim()) throw Object.assign(new Error("CTA button text is required"), { statusCode: 400 });
+  if (!String(payload.ctaUrl || "").trim()) throw Object.assign(new Error("CTA URL / Deep Link is required"), { statusCode: 400 });
+  if (!isValidCtaUrl(payload.ctaUrl)) throw Object.assign(new Error("CTA URL / Deep Link must be a valid HTTPS URL or custom deep link"), { statusCode: 400 });
+}
+
+function renderStringTemplate(template: unknown, values: Record<string, unknown>) {
+  return String(template || "").replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_match, key) => String(values[key] ?? ""));
+}
+
+function renderCtaConfig(config: any, values: Record<string, unknown>) {
+  if (!config) return null;
+  return {
+    ctaConfigId: String(config._id || config.id || ""),
+    ctaText: renderStringTemplate(config.ctaText, values),
+    ctaType: String(config.ctaType || "none"),
+    ctaUrl: renderStringTemplate(config.ctaUrl, values),
+    openIn: String(config.openIn || "auto"),
+    buttonColor: String(config.buttonColor || "#2563eb"),
+    buttonTextColor: String(config.buttonTextColor || "#ffffff"),
+    buttonAlignment: String(config.buttonAlignment || "center"),
   };
 }
 
@@ -2859,6 +2906,51 @@ function templatePayloadFromRow(row: Record<string, unknown>) {
   };
 }
 
+router.get("/cta-configs", wrap(async (req, res) => {
+  const query = req.query as Record<string, unknown>;
+  const filters: Record<string, any> = {};
+  const channel = String(query.channel || "").trim();
+  if (["email", "push"].includes(channel)) filters.channel = { $in: [channel, "both"] };
+  if (query.isActive !== undefined) filters.isActive = String(query.isActive) !== "false";
+  const search = String(query.search || "").trim();
+  if (search) filters.$or = [{ name: new RegExp(search, "i") }, { ctaText: new RegExp(search, "i") }, { ctaUrl: new RegExp(search, "i") }, { ctaType: new RegExp(search, "i") }];
+  const items = await CtaConfig.find(filters).sort({ updatedAt: -1, name: 1 });
+  sendSuccess(res, items.map((item: any) => item.toJSON()));
+}));
+
+router.post("/cta-configs", wrap(async (req, res) => {
+  const payload = normalizeCtaConfigPayload(req.body || {});
+  assertValidCtaConfig(payload);
+  const item = await new CtaConfig({
+    ...payload,
+    createdBy: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
+    updatedBy: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
+  }).save();
+  sendSuccess(res, item.toJSON(), { status: 201, message: "CTA configuration created" });
+}));
+
+router.put("/cta-configs/:id", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "CTA configuration");
+  const item = await CtaConfig.findById(req.params.id);
+  if (!item) throw Object.assign(new Error("CTA configuration not found"), { statusCode: 404 });
+  const payload = normalizeCtaConfigPayload({ ...item.toObject(), ...(req.body || {}) });
+  assertValidCtaConfig(payload);
+  Object.assign(item, {
+    ...payload,
+    updatedBy: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
+  });
+  await item.save();
+  sendSuccess(res, item.toJSON(), { message: "CTA configuration updated" });
+}));
+
+router.delete("/cta-configs/:id", wrap(async (req, res) => {
+  assertObjectId(String(req.params.id), "CTA configuration");
+  const item = await CtaConfig.findById(req.params.id);
+  if (!item) throw Object.assign(new Error("CTA configuration not found"), { statusCode: 404 });
+  await CtaConfig.findByIdAndDelete(req.params.id);
+  sendSuccess(res, null, { message: "CTA configuration deleted" });
+}));
+
 async function saveNotificationAttachment(file?: Express.Multer.File) {
   if (!file?.buffer) return { attachmentUrl: "", attachmentName: "", emailAttachments: [] as any[] };
   await fs.mkdir(NOTIFICATION_ASSET_DIR, { recursive: true });
@@ -2892,7 +2984,7 @@ router.post(["/notifications/send", "/notifications/broadcast"], upload.single("
   const settings = await getNotificationSettings();
   const body = req.body ?? {};
   const type = String(body.type || "notification").trim();
-  const deliveryMode = normalizeDeliveryMode(body.deliveryMode);
+  const deliveryMode = normalizeDeliveryMode(body.deliveryMode || body.deliveryType);
   const flags = deliveryFlags(deliveryMode, settings);
   const title = String(body.title || body.notification_title || "").trim();
   const message = String(body.message || body.body || body.notification_message || "").trim();
@@ -2900,40 +2992,60 @@ router.post(["/notifications/send", "/notifications/broadcast"], upload.single("
 
   const userIds = Array.isArray(body.userIds)
     ? body.userIds.map((id: any) => String(id))
-    : String(body.userIds || "").split(",").map((id) => id.trim()).filter(Boolean);
+    : String(body.userIds || body.selectedUsers || "").split(/[\n,]+/).map((id) => id.trim()).filter(Boolean);
   const filters: Record<string, any> = { isActive: { $ne: false } };
   if (userIds.length) filters._id = { $in: userIds };
-  if (body.targetGroup) filters.userType = String(body.targetGroup);
+  if (body.targetGroup || body.targetType) filters.userType = String(body.targetGroup || body.targetType);
   const users = await User.find(filters).select("_id name email mobile userType").limit(Math.min(Math.max(Number(body.limit || 500), 1), 5000));
   const now = new Date();
   const dedupePrefix = `admin-${type}-${now.getTime()}`;
   const savedAttachment = await saveNotificationAttachment(req.file);
-  const docs = users.map((user: any) => ({
-    userId: String(user._id),
-    type,
-    title,
-    body: message,
-    dedupeKey: `${dedupePrefix}-${String(user._id)}`,
-    visibleInApp: flags.inApp,
-    linkUrl: String(body.linkUrl || body.buttonLink || body.button_link || ""),
-    attachmentUrl: savedAttachment.attachmentUrl,
-    attachmentName: savedAttachment.attachmentName,
-    targetGroup: String(body.targetGroup || ""),
-    deliveryMode,
-    notificationStatus: flags.inApp ? "created" : "skipped",
-    pushStatus: flags.inApp ? "pending" : "not_requested",
-    pushError: "",
-    emailTemplateKey: flags.email ? String(body.templateKey || notificationTemplateKey(type)) : "",
-    senderId: String((req as any).admin?._id || ""),
-    senderName: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
-  }));
+  const variables = parseVariables(body.variables);
+  const ctaConfigId = String(body.ctaConfigId || "").trim();
+  const ctaConfig = ctaConfigId ? await CtaConfig.findById(ctaConfigId).lean() : null;
+  const docs = users.map((user: any) => {
+    const userVariables = {
+      user_name: user.name || user.email || "Learner",
+      email: user.email || "",
+      mobile: user.mobile || "",
+      title,
+      message,
+      notification_title: title,
+      notification_message: message,
+      current_date: now.toLocaleDateString("en-IN"),
+      current_time: now.toLocaleTimeString("en-IN"),
+      ...variables,
+    };
+    const renderedCta = renderCtaConfig(ctaConfig, userVariables);
+    const linkUrl = renderedCta?.ctaUrl || String(body.linkUrl || body.deepLink || body.buttonLink || body.button_link || "");
+    return {
+      userId: String(user._id),
+      type,
+      title,
+      body: message,
+      dedupeKey: `${dedupePrefix}-${String(user._id)}`,
+      visibleInApp: flags.inApp,
+      linkUrl,
+      attachmentUrl: savedAttachment.attachmentUrl,
+      attachmentName: savedAttachment.attachmentName,
+      targetGroup: String(body.targetGroup || body.targetType || ""),
+      deliveryMode,
+      notificationStatus: flags.inApp ? "created" : "skipped",
+      pushStatus: flags.push ? "pending" : "not_requested",
+      pushError: "",
+      emailTemplateKey: flags.email ? String(body.templateKey || body.emailTemplateKey || notificationTemplateKey(type)) : "",
+      ctaConfigId: renderedCta?.ctaConfigId || "",
+      ctaText: renderedCta?.ctaText || String(body.ctaText || ""),
+      senderId: String((req as any).admin?._id || ""),
+      senderName: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
+    };
+  });
   const { notifications, pushDelivery } = await insertUserNotifications(docs, { autoPush: true });
   let emailSent = 0;
   let emailSkipped = 0;
   const attachments = savedAttachment.emailAttachments;
-  const variables = parseVariables(body.variables);
   if (flags.email) {
-    const templateKey = String(body.templateKey || notificationTemplateKey(type));
+    const templateKey = String(body.templateKey || body.emailTemplateKey || notificationTemplateKey(type));
     const notificationByUser = new Map(notifications.map((item: any) => [String(item.userId), item]));
     for (const user of users) {
       const notification = notificationByUser.get(String(user._id));
@@ -2947,13 +3059,27 @@ router.post(["/notifications/send", "/notifications/broadcast"], upload.single("
         continue;
       }
       try {
+        const renderedCta = renderCtaConfig(ctaConfig, {
+          user_name: user.name || user.email || "Learner",
+          email: user.email,
+          mobile: user.mobile || "",
+          title,
+          message,
+          notification_title: title,
+          notification_message: message,
+          current_date: now.toLocaleDateString("en-IN"),
+          current_time: now.toLocaleTimeString("en-IN"),
+          ...variables,
+        });
         const result = await sendTemplatedEmail(templateKey, user.email, {
           user_name: user.name || user.email || "Learner",
           email: user.email,
           title,
           message,
           publish_date: now.toLocaleDateString("en-IN"),
-          button_link: body.buttonLink || body.button_link || "",
+          button_link: renderedCta?.ctaUrl || body.buttonLink || body.button_link || "",
+          cta_text: renderedCta?.ctaText || body.ctaText || "",
+          cta_url: renderedCta?.ctaUrl || "",
           notification_title: title,
           notification_message: message,
           announcement_title: title,
@@ -3302,6 +3428,7 @@ router.post("/email-templates", wrap(async (req, res) => {
     sampleData: body.sampleData || {},
     isActive: body.isActive !== false,
     isDefault: body.isDefault === true,
+    ctaConfigId: String(body.ctaConfigId || "").trim(),
     ...normalizeCtaPayload(body),
     createdBy: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
     updatedBy: String((req as any).admin?.name || (req as any).admin?.email || "Admin"),
@@ -3334,6 +3461,7 @@ router.put("/email-templates/:id", wrap(async (req, res) => {
   template.variables = body.variables === undefined ? template.variables : parseTemplateVariableList(body.variables);
   template.sampleData = body.sampleData || template.sampleData || {};
   template.isActive = body.isActive === undefined ? template.isActive : Boolean(body.isActive);
+  template.ctaConfigId = body.ctaConfigId === undefined ? template.ctaConfigId : String(body.ctaConfigId || "").trim();
   Object.assign(template, normalizeCtaPayload({
     ctaEnabled: body.ctaEnabled === undefined ? template.ctaEnabled : body.ctaEnabled,
     ctaText: body.ctaText === undefined ? template.ctaText : body.ctaText,
