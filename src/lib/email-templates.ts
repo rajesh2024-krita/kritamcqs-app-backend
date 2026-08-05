@@ -354,15 +354,24 @@ function normalizeAlignment(value: unknown) {
   return ["left", "center", "right"].includes(String(value)) ? String(value) : "center";
 }
 
-function normalizeEmailCtaHref(value: unknown) {
+const CTA_REDIRECT_BASE = "https://app.kritamcqs.com/cta";
+const APP_LINK_HOST = "app.kritamcqs.com";
+
+function ctaRedirectUrl(target: string) {
+  return `${CTA_REDIRECT_BASE}?target=${encodeURIComponent(target)}`;
+}
+
+function normalizeAppCtaTarget(value: unknown) {
   const rawHref = String(value || "").trim();
   if (!rawHref) return "";
-  if (rawHref.startsWith("/")) return `https://app.kritamcqs.com/#${rawHref}`;
+  if (rawHref.startsWith("/")) return rawHref;
   if (/^https?:\/\//i.test(rawHref)) {
     try {
       const parsed = new URL(rawHref);
-      if (parsed.hostname === "app.kritamcqs.com" && parsed.pathname !== "/" && !parsed.hash.startsWith("#/")) {
-        return `https://app.kritamcqs.com/#${parsed.pathname}${parsed.search}`;
+      if (parsed.hostname === APP_LINK_HOST) {
+        if (parsed.pathname === "/cta") return parsed.searchParams.get("target") || "/dashboard";
+        if (parsed.hash.startsWith("#/")) return `${parsed.hash.slice(1)}${parsed.search}`;
+        return `${parsed.pathname || "/dashboard"}${parsed.search}`;
       }
     } catch {
       return rawHref;
@@ -371,10 +380,21 @@ function normalizeEmailCtaHref(value: unknown) {
   return rawHref;
 }
 
+function normalizeEmailCtaHref(value: unknown, openIn: unknown = "auto") {
+  const rawHref = String(value || "").trim();
+  if (!rawHref) return "";
+  const mode = String(openIn || "auto");
+  const isWebsiteMode = mode === "website";
+  const isStoreUrl = /^https:\/\/(play\.google\.com|apps\.apple\.com)\//i.test(rawHref);
+  const isWebsiteUrl = /^https?:\/\/(www\.)?kritamcqs\.com(\/|$)/i.test(rawHref);
+  if (isWebsiteMode || isStoreUrl || isWebsiteUrl) return rawHref;
+  return ctaRedirectUrl(normalizeAppCtaTarget(rawHref));
+}
+
 export function buildEmailCtaHtml(template: any) {
   if (!template?.ctaEnabled) return "";
   const text = String(template.ctaText || "").trim();
-  const href = normalizeEmailCtaHref(template.ctaUrl);
+  const href = normalizeEmailCtaHref(template.ctaUrl, template.openIn);
   if (!text || !isValidEmailCtaUrl(href)) return "";
 
   const alignment = normalizeAlignment(template.buttonAlignment);
@@ -394,7 +414,7 @@ function appendEmailCta(htmlContent: string, ctaHtml: string) {
 function appendTextCta(textContent: string, template: any) {
   if (!template?.ctaEnabled) return textContent;
   const text = String(template.ctaText || "").trim();
-  const href = normalizeEmailCtaHref(template.ctaUrl);
+  const href = normalizeEmailCtaHref(template.ctaUrl, template.openIn);
   if (!text || !isValidEmailCtaUrl(href)) return textContent;
   const current = String(textContent || "").trimEnd();
   return `${current}${current ? "\n\n" : ""}${text}: ${href}`;
