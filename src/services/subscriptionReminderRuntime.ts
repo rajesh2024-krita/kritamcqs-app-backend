@@ -64,7 +64,8 @@ type SubscriptionReminder = {
 };
 
 let indexesReady: Promise<void> | null = null;
-const REMINDER_SEQUENCE_COOLDOWN_MS = 60 * 60 * 1000;
+const REMINDER_SEQUENCE_COOLDOWN_MS = 5 * 60 * 1000;
+const REMINDER_DELIVERY_LOCK_TIMEOUT_MS = 10 * 60 * 1000;
 
 const eventTypes = new Set([
   "razorpay_closed",
@@ -171,9 +172,25 @@ async function ensureRuntimeIndexes() {
         { unique: true, partialFilterExpression: { activeKey: { $type: "string", $gt: "" } } },
       ),
       collection("reminder_logs").createIndex({ reminderId: 1, "payload.reminderNumber": 1 }),
-    ]).then(() => undefined);
+    ])
+      .then(() => undefined)
+      .catch((error) => {
+        indexesReady = null;
+        logger.warn({ err: error }, "Subscription reminder index setup skipped");
+      });
   }
   await indexesReady;
+}
+
+function sameReminderTrigger(reminder: SubscriptionReminder, body: any) {
+  const nextSubscriptionId = String(body?.subscriptionId || body?.orderId || "");
+  const nextPlan = String(body?.subscriptionPlan || body?.planName || "");
+  const existingSubscriptionId = String(reminder.subscriptionId || "");
+  const existingPlan = String(reminder.subscriptionPlan || "");
+  return Boolean(
+    (nextSubscriptionId && existingSubscriptionId && nextSubscriptionId === existingSubscriptionId)
+      || (!nextSubscriptionId && !existingSubscriptionId && nextPlan && existingPlan && nextPlan === existingPlan),
+  );
 }
 
 async function enabledConfig(platform: "Android" | "iOS" | "Web") {
@@ -225,7 +242,9 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
         || (existingSequence as any).createdAt
         || 0,
     ).getTime();
-    const stillCoolingDown = Number.isFinite(settledAt) && Date.now() - settledAt < REMINDER_SEQUENCE_COOLDOWN_MS;
+    const stillCoolingDown = sameReminderTrigger(existingSequence, body)
+      && Number.isFinite(settledAt)
+      && Date.now() - settledAt < REMINDER_SEQUENCE_COOLDOWN_MS;
     if (!stillCoolingDown) {
       await reminderCollection.updateOne(
         { _id: existingSequence._id },
@@ -286,6 +305,7 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
   const shouldAttemptImmediate = config.immediateReminderEnabled !== false && Number(reminder.reminderCount || 0) === 0;
 
   if (shouldAttemptImmediate) {
+    const staleLockCutoff = new Date(Date.now() - REMINDER_DELIVERY_LOCK_TIMEOUT_MS);
     const lock = await reminderCollection.updateOne(
       {
         _id: reminder._id,
@@ -293,7 +313,10 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
         purchaseCompleted: false,
         reminderCount: 0,
         immediateReminderSentAt: { $exists: false },
-        immediateReminderSending: { $ne: true },
+        $or: [
+          { immediateReminderSending: { $ne: true } },
+          { updatedAt: { $lte: staleLockCutoff } },
+        ],
       },
       {
         $set: {
@@ -550,13 +573,17 @@ export async function runDueSubscriptionReminders(limit = 50) {
 
   for (const reminder of reminders) {
     try {
+      const staleLockCutoff = new Date(Date.now() - REMINDER_DELIVERY_LOCK_TIMEOUT_MS);
       const lockedReminder = await collection("subscription_reminders").findOneAndUpdate(
         {
           _id: reminder._id,
           status: "pending",
           purchaseCompleted: false,
           nextReminderDate: { $lte: new Date() },
-          scheduledReminderSending: { $ne: true },
+          $or: [
+            { scheduledReminderSending: { $ne: true } },
+            { updatedAt: { $lte: staleLockCutoff } },
+          ],
         },
         {
           $set: {
