@@ -236,14 +236,21 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
     purchaseCompleted: false,
   }) as SubscriptionReminder | null;
   if (existingSequence && existingSequence.status !== "pending") {
+    if (sameReminderTrigger(existingSequence, body)) {
+      return {
+        skipped: true,
+        reason: `Reminder sequence is ${existingSequence.status || "not pending"}`,
+        reminder: { ...existingSequence, id: String(existingSequence._id), _id: undefined },
+      };
+    }
+
     const settledAt = new Date(
       (existingSequence as any).lastReminderDate
         || (existingSequence as any).updatedAt
         || (existingSequence as any).createdAt
         || 0,
     ).getTime();
-    const stillCoolingDown = sameReminderTrigger(existingSequence, body)
-      && Number.isFinite(settledAt)
+    const stillCoolingDown = Number.isFinite(settledAt)
       && Date.now() - settledAt < REMINDER_SEQUENCE_COOLDOWN_MS;
     if (!stillCoolingDown) {
       await reminderCollection.updateOne(
@@ -418,10 +425,15 @@ async function deliverReminder(
           body: render(pushMessage, values),
           visibleInApp: true,
           linkUrl: pushLink,
+          imageUrl: "",
           targetGroup: "subscription_abandoned",
-          deliveryMode: "app_push",
+          deliveryMode: "notification",
           notificationStatus: "created",
           pushStatus: "pending",
+          pushError: "",
+          emailStatus: "pending",
+          emailError: "",
+          emailTemplateKey: "",
           ctaText: pushCtaText,
           senderName: "Krita",
           sentAt: new Date(),
@@ -434,6 +446,8 @@ async function deliverReminder(
 
     if (!created) {
       notificationStatus = "skipped";
+      emailStatus = "skipped";
+      errorMessage = "Duplicate reminder notification skipped";
     } else if ((pushDelivery?.successCount || 0) > 0) {
       notificationStatus = "sent";
     } else if ((pushDelivery?.failedCount || 0) > 0) {
@@ -450,45 +464,47 @@ async function deliverReminder(
     errorMessage = error instanceof Error ? error.message : "Push notification failed";
   }
 
-  try {
-    const settings = await InvoiceSettings.findOneAndUpdate(
-      { key: "default" },
-      { $setOnInsert: { key: "default" } },
-      { upsert: true, new: true },
-    );
-    const email = String((user as any).email || "").trim();
-    if (!email) {
-      emailStatus = "skipped";
+  if (emailStatus !== "skipped") {
+    try {
+      const settings = await InvoiceSettings.findOneAndUpdate(
+        { key: "default" },
+        { $setOnInsert: { key: "default" } },
+        { upsert: true, new: true },
+      );
+      const email = String((user as any).email || "").trim();
+      if (!email) {
+        emailStatus = "skipped";
+        if (notificationRecord) {
+          notificationRecord.emailStatus = "skipped";
+          notificationRecord.emailError = "User email missing";
+          await notificationRecord.save();
+        }
+      } else {
+        const result = await sendEmail({
+          smtp: settings.smtp,
+          to: email,
+          subject: render(emailSubject, values),
+          html: render(emailBody, values),
+          text: render(pushMessage || emailSubject, values),
+        });
+        emailStatus = result.skipped ? "skipped" : "sent";
+        if (result.reason) errorMessage = [errorMessage, result.reason].filter(Boolean).join("; ");
+        if (notificationRecord) {
+          notificationRecord.emailStatus = emailStatus;
+          notificationRecord.emailError = result.reason ? String(result.reason) : "";
+          if (emailStatus === "sent") notificationRecord.sentAt = new Date();
+          await notificationRecord.save();
+        }
+      }
+    } catch (error) {
+      emailStatus = "failed";
+      const emailError = error instanceof Error ? error.message : "Email failed";
+      errorMessage = [errorMessage, emailError].filter(Boolean).join("; ");
       if (notificationRecord) {
-        notificationRecord.emailStatus = "skipped";
-        notificationRecord.emailError = "User email missing";
+        notificationRecord.emailStatus = "failed";
+        notificationRecord.emailError = emailError;
         await notificationRecord.save();
       }
-    } else {
-      const result = await sendEmail({
-        smtp: settings.smtp,
-        to: email,
-        subject: render(emailSubject, values),
-        html: render(emailBody, values),
-        text: render(pushMessage || emailSubject, values),
-      });
-      emailStatus = result.skipped ? "skipped" : "sent";
-      if (result.reason) errorMessage = [errorMessage, result.reason].filter(Boolean).join("; ");
-      if (notificationRecord) {
-        notificationRecord.emailStatus = emailStatus;
-        notificationRecord.emailError = result.reason ? String(result.reason) : "";
-        if (emailStatus === "sent") notificationRecord.sentAt = new Date();
-        await notificationRecord.save();
-      }
-    }
-  } catch (error) {
-    emailStatus = "failed";
-    const emailError = error instanceof Error ? error.message : "Email failed";
-    errorMessage = [errorMessage, emailError].filter(Boolean).join("; ");
-    if (notificationRecord) {
-      notificationRecord.emailStatus = "failed";
-      notificationRecord.emailError = emailError;
-      await notificationRecord.save();
     }
   }
 
