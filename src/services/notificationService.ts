@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import { PushDeviceToken, User, UserNotification } from "@api/db";
 import { getMessaging } from "../lib/firebase";
 import { logger } from "../lib/logger";
@@ -40,9 +41,15 @@ function chunk<T>(items: T[], size: number) {
 
 async function activeTokensForUsers(userIds: string[]) {
   if (!userIds.length) return [];
+  const uniqueUserIds = [...new Set(userIds.map((id) => String(id || "").trim()).filter(Boolean))];
+  const objectIds = uniqueUserIds.filter((id) => mongoose.isValidObjectId(id)).map((id) => new mongoose.Types.ObjectId(id));
   const tokens = await PushDeviceToken.find({
-    userId: { $in: [...new Set(userIds)] },
+    $or: [
+      { userId: { $in: uniqueUserIds } },
+      ...(objectIds.length ? [{ userId: { $in: objectIds } }] : []),
+    ],
     enabled: true,
+    active: { $ne: false },
   }).select("token");
   return [...new Set(tokens.map((item: any) => String(item.token)).filter(Boolean))];
 }
@@ -123,6 +130,25 @@ async function sendToTokens(tokens: string[], payload: NotificationPayload) {
         notification: {
           channelId: "default",
           clickAction: "FLUTTER_NOTIFICATION_CLICK",
+          sound: "default",
+        },
+      },
+      apns: {
+        headers: {
+          "apns-priority": "10",
+        },
+        payload: {
+          aps: {
+            sound: "default",
+            contentAvailable: false,
+          },
+        },
+      },
+      webpush: {
+        notification: {
+          title: payload.title,
+          body: payload.body,
+          icon: "/icon-192.png",
         },
       },
     });

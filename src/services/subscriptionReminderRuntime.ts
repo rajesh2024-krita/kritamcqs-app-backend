@@ -349,66 +349,74 @@ async function deliverReminder(
   const pushTitle = step.push?.title || step.inApp?.title || config.notificationTitle || "";
   const pushMessage = step.push?.message || step.inApp?.message || config.notificationMessage || "";
   const pushLink = step.push?.ctaAction || step.inApp?.ctaAction || "/subscription";
+  const pushCtaText = step.push?.ctaText || step.inApp?.ctaText || "Open";
   const emailSubject = step.email?.subject || config.emailSubject || pushTitle;
   const emailBody = step.email?.body || config.emailTemplate || pushMessage;
 
-  if (config.channels !== "Email") {
-    try {
-      const dedupeKey = `subscription-reminder:${String(reminder._id)}:${reminderNumber}`;
-      const { notification, created } = await upsertUserNotificationOnInsert(
-        { dedupeKey },
-        {
-          userId: String(reminder.userId),
-          type: "subscription",
-          title: render(pushTitle, values),
-          body: render(pushMessage, values),
-          dedupeKey,
-          visibleInApp: true,
-          linkUrl: pushLink,
-          targetGroup: "subscription_abandoned",
-          deliveryMode: config.channels === "Both" ? "email_push" : "push",
-          notificationStatus: "created",
-          pushStatus: "pending",
-          senderName: "Krita",
-          sentAt: new Date(),
-        },
-        { autoPush: true },
-      );
-      notificationStatus = created
-        ? notification?.pushStatus === "sent" ? "sent" : notification?.pushStatus || "created"
-        : "skipped";
-      if (notification?.pushError) errorMessage = notification.pushError;
-    } catch (error) {
+  try {
+    const dedupeKey = `subscription-reminder:${String(reminder._id)}:${reminderNumber}`;
+    const { pushDelivery, created } = await upsertUserNotificationOnInsert(
+      { dedupeKey },
+      {
+        userId: String(reminder.userId),
+        type: "subscription",
+        title: render(pushTitle, values),
+        body: render(pushMessage, values),
+        dedupeKey,
+        visibleInApp: true,
+        linkUrl: pushLink,
+        targetGroup: "subscription_abandoned",
+        deliveryMode: "app_push",
+        notificationStatus: "created",
+        pushStatus: "pending",
+        ctaText: pushCtaText,
+        senderName: "Krita",
+        sentAt: new Date(),
+      },
+      { autoPush: true },
+    );
+
+    if (!created) {
+      notificationStatus = "skipped";
+    } else if ((pushDelivery?.successCount || 0) > 0) {
+      notificationStatus = "sent";
+    } else if ((pushDelivery?.failedCount || 0) > 0) {
       notificationStatus = "failed";
-      errorMessage = error instanceof Error ? error.message : "Push notification failed";
+      errorMessage = "Push delivery failed";
+    } else if ((pushDelivery?.noTokenCount || 0) > 0) {
+      notificationStatus = "skipped";
+      errorMessage = "No active push token found for user";
+    } else {
+      notificationStatus = "pending";
     }
+  } catch (error) {
+    notificationStatus = "failed";
+    errorMessage = error instanceof Error ? error.message : "Push notification failed";
   }
 
-  if (config.channels !== "Notification") {
-    try {
-      const settings = await InvoiceSettings.findOneAndUpdate(
-        { key: "default" },
-        { $setOnInsert: { key: "default" } },
-        { upsert: true, new: true },
-      );
-      const email = String((user as any).email || "").trim();
-      if (!email) {
-        emailStatus = "skipped";
-      } else {
-        const result = await sendEmail({
-          smtp: settings.smtp,
-          to: email,
-          subject: render(emailSubject, values),
-          html: render(emailBody, values),
-          text: render(pushMessage || emailSubject, values),
-        });
-        emailStatus = result.skipped ? "skipped" : "sent";
-        if (result.reason) errorMessage = [errorMessage, result.reason].filter(Boolean).join("; ");
-      }
-    } catch (error) {
-      emailStatus = "failed";
-      errorMessage = [errorMessage, error instanceof Error ? error.message : "Email failed"].filter(Boolean).join("; ");
+  try {
+    const settings = await InvoiceSettings.findOneAndUpdate(
+      { key: "default" },
+      { $setOnInsert: { key: "default" } },
+      { upsert: true, new: true },
+    );
+    const email = String((user as any).email || "").trim();
+    if (!email) {
+      emailStatus = "skipped";
+    } else {
+      const result = await sendEmail({
+        smtp: settings.smtp,
+        to: email,
+        subject: render(emailSubject, values),
+        html: render(emailBody, values),
+        text: render(pushMessage || emailSubject, values),
+      });
+      emailStatus = result.skipped ? "skipped" : "sent";
+      if (result.reason) errorMessage = [errorMessage, result.reason].filter(Boolean).join("; ");
     }
+  } catch (error) {
+    emailStatus = "failed";
+    errorMessage = [errorMessage, error instanceof Error ? error.message : "Email failed"].filter(Boolean).join("; ");
   }
 
   const reminderCount = reminderNumber;
