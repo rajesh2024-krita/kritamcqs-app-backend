@@ -2,7 +2,7 @@ import mongoose from "mongoose";
 import { InvoiceSettings, User } from "@api/db";
 import { sendEmail } from "../lib/simple-email";
 import { logger } from "../lib/logger";
-import { upsertUserNotificationOnInsert } from "./notificationService";
+import { insertUserNotifications } from "./notificationService";
 
 type ReminderStep = {
   id?: string;
@@ -366,26 +366,28 @@ async function deliverReminder(
 
   try {
     const dedupeKey = `subscription-reminder:${String(reminder._id)}:${reminderNumber}`;
-    const { pushDelivery, created } = await upsertUserNotificationOnInsert(
-      { dedupeKey },
-      {
-        userId: String(reminder.userId),
-        type: "subscription",
-        title: render(pushTitle, values),
-        body: render(pushMessage, values),
-        dedupeKey,
-        visibleInApp: true,
-        linkUrl: pushLink,
-        targetGroup: "subscription_abandoned",
-        deliveryMode: "app_push",
-        notificationStatus: "created",
-        pushStatus: "pending",
-        ctaText: pushCtaText,
-        senderName: "Krita",
-        sentAt: new Date(),
-      },
+    const { notifications, pushDelivery } = await insertUserNotifications(
+      [
+        {
+          dedupeKey,
+          userId: String(reminder.userId),
+          type: "subscription",
+          title: render(pushTitle, values),
+          body: render(pushMessage, values),
+          visibleInApp: true,
+          linkUrl: pushLink,
+          targetGroup: "subscription_abandoned",
+          deliveryMode: "app_push",
+          notificationStatus: "created",
+          pushStatus: "pending",
+          ctaText: pushCtaText,
+          senderName: "Krita",
+          sentAt: new Date(),
+        },
+      ],
       { autoPush: true },
     );
+    const created = notifications.length > 0;
 
     if (!created) {
       notificationStatus = "skipped";

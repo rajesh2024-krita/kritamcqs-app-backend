@@ -284,7 +284,30 @@ export async function createUserNotification(doc: Record<string, any>, options: 
 
 export async function insertUserNotifications(docs: Record<string, any>[], options: { autoPush?: boolean; insertOptions?: Record<string, any> } = {}) {
   logger.info({ count: docs.length, type: docs[0]?.["type"] || "" }, "[NOTIFICATION CREATED]");
-  const notifications = docs.length ? await UserNotification.insertMany(docs, { ordered: false, ...(options.insertOptions || {}) }) : [];
+  let notifications: any[] = [];
+  if (docs.length) {
+    try {
+      notifications = await UserNotification.insertMany(docs, { ordered: false, ...(options.insertOptions || {}) });
+    } catch (error: any) {
+      const writeErrors = error?.writeErrors || error?.result?.result?.writeErrors || [];
+      const duplicateOnly = error?.code === 11000
+        || (Array.isArray(writeErrors) && writeErrors.length > 0 && writeErrors.every((item: any) => item?.code === 11000));
+      if (!duplicateOnly) throw error;
+
+      const insertedDocs = Array.isArray(error?.insertedDocs) ? error.insertedDocs.filter(Boolean) : [];
+      const insertedIds = Object.values(error?.result?.insertedIds || error?.insertedIds || {}).filter(Boolean);
+      notifications = insertedDocs.length
+        ? insertedDocs
+        : insertedIds.length
+          ? await UserNotification.find({ _id: { $in: insertedIds } })
+          : [];
+      logger.warn({
+        requestedCount: docs.length,
+        insertedCount: notifications.length,
+        skippedDuplicates: docs.length - notifications.length,
+      }, "[NOTIFICATION SAVED]");
+    }
+  }
   const pushDelivery = options.autoPush === false ? null : await sendPushForUserNotifications(notifications);
   return { notifications, pushDelivery };
 }
