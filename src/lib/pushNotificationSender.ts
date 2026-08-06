@@ -1,4 +1,9 @@
 import jwt from "jsonwebtoken";
+import { config as loadEnv } from "dotenv";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { logger } from "./logger";
 
 const FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging";
 const OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -26,6 +31,23 @@ type PushPayload = {
 
 let cachedAccessToken: string | null = null;
 let cachedAccessTokenExpiresAt = 0;
+
+function loadBackendEnvironment() {
+  const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    process.env["DOTENV_CONFIG_PATH"],
+    path.resolve(process.cwd(), ".env"),
+    path.resolve(moduleDirectory, "..", ".env"),
+    path.resolve(moduleDirectory, "..", "..", ".env"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  const environmentPath = candidates.find((candidate) => existsSync(candidate));
+  if (environmentPath) {
+    loadEnv({ path: environmentPath, override: false, quiet: true });
+  }
+}
+
+loadBackendEnvironment();
 
 function parseJsonCredential(value: string, label: string) {
   try {
@@ -199,6 +221,11 @@ export async function sendPushToTokens(tokens: string[] = [], payload: PushPaylo
 
     if (response.ok) {
       result.successCount += 1;
+      logger.info({
+        projectId: account.projectId,
+        tokenSuffix: token.slice(-8),
+        title: String(payload.title || ""),
+      }, "[FCM HTTP V1 SENT SUCCESS]");
       continue;
     }
 
@@ -206,7 +233,15 @@ export async function sendPushToTokens(tokens: string[] = [], payload: PushPaylo
     if (isInvalidTokenError(response.status, body)) {
       result.invalidTokens.push(token);
     }
-    result.errors.push((body as any).error?.message || (body as any).error || `FCM failed with ${response.status}`);
+    const errorMessage = (body as any).error?.message || (body as any).error || `FCM failed with ${response.status}`;
+    logger.error({
+      projectId: account.projectId,
+      tokenSuffix: token.slice(-8),
+      status: response.status,
+      body,
+      error: errorMessage,
+    }, "[FCM HTTP V1 SENT FAILED]");
+    result.errors.push(errorMessage);
   }
 
   return { ...result, errors: [...new Set(result.errors)] };

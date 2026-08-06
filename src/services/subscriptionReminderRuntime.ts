@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import { InvoiceSettings, PushDeviceToken, User, UserNotification } from "@api/db";
+import { InvoiceSettings, User, UserNotification } from "@api/db";
 import { sendEmail } from "../lib/simple-email";
 import { logger } from "../lib/logger";
 import { insertUserNotifications, sendPushForUserNotifications } from "./notificationService";
@@ -164,70 +164,6 @@ function placeholders(user: any, reminder: SubscriptionReminder, config: Reminde
   };
 }
 
-async function activeTokensForReminderUser(userId: unknown) {
-  const userIdString = String(userId || "").trim();
-  if (!userIdString) return [];
-  const objectIds = mongoose.isValidObjectId(userIdString) ? [new mongoose.Types.ObjectId(userIdString)] : [];
-  const tokens = await PushDeviceToken.find({
-    $or: [
-      { userId: userIdString },
-      ...(objectIds.length ? [{ userId: { $in: objectIds } }] : []),
-    ],
-    enabled: true,
-    active: { $ne: false },
-  }).select("token");
-  return [...new Set(tokens.map((item: any) => String(item.token || "").trim()).filter(Boolean))];
-}
-
-async function sendReminderPushNotification(notification: any) {
-  const result = { sentCount: 0, successCount: 0, failedCount: 0, noTokenCount: 0, skippedCount: 0, errors: [] as string[] };
-  if (!notification || notification.visibleInApp === false) {
-    result.skippedCount += 1;
-    return result;
-  }
-
-  logger.info({
-    notificationId: String(notification._id || notification.id || ""),
-    userId: String(notification.userId || ""),
-    type: notification.type,
-    title: notification.title,
-  }, "[NOTIFICATION SAVED]");
-
-  const tokens = await activeTokensForReminderUser(notification.userId);
-  logger.info({
-    notificationId: String(notification._id || notification.id || ""),
-    userId: String(notification.userId || ""),
-    tokenCount: tokens.length,
-  }, "[FCM TOKEN FOUND]");
-
-  if (!tokens.length) {
-    result.noTokenCount += 1;
-    await UserNotification.updateOne(
-      { _id: notification._id },
-      { $set: { pushStatus: "no_token", pushError: "", sentAt: notification.sentAt || new Date() } },
-    );
-    return result;
-  }
-
-  try {
-    const delivery = await sendPushForUserNotifications([notification]);
-    result.sentCount += delivery.sentCount || 0;
-    result.successCount += delivery.successCount || 0;
-    result.failedCount += delivery.failedCount || 0;
-    result.noTokenCount += delivery.noTokenCount || 0;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Push delivery failed";
-    result.failedCount += 1;
-    result.errors.push(message);
-    await UserNotification.updateOne(
-      { _id: notification._id },
-      { $set: { pushStatus: "failed", pushError: message, sentAt: notification.sentAt || new Date() } },
-    );
-  }
-
-  return { ...result, errors: [...new Set(result.errors)] };
-}
-
 async function ensureRuntimeIndexes() {
   if (!indexesReady) {
     indexesReady = Promise.all([
@@ -281,6 +217,13 @@ export async function listEnabledScripts(platformInput: unknown) {
 
 export async function trackSubscriptionReminder(userId: string, body: any) {
   const eventType = String(body?.eventType || "subscription_abandoned").trim();
+  logger.info({
+    userId,
+    eventType,
+    platform: body?.platform,
+    subscriptionId: body?.subscriptionId || body?.orderId || "",
+    subscriptionPlan: body?.subscriptionPlan || body?.planName || "",
+  }, "[REMINDER TRIGGERED]");
   if (!eventTypes.has(eventType)) {
     const error = new Error("Unsupported reminder event type") as Error & { statusCode?: number };
     error.statusCode = 400;
@@ -289,6 +232,14 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
 
   const platform = platformFrom(body?.platform);
   const config = await enabledConfig(platform);
+  logger.info({
+    userId,
+    platform,
+    configId: config ? String(config._id) : "",
+    configName: config?.reminderName || "",
+    status: config?.status || "",
+    reminderCount: Array.isArray(config?.reminders) ? config.reminders.length : 0,
+  }, "[REMINDER CONFIG LOADED]");
   if (!config) return { skipped: true, reason: "No enabled reminder configuration" };
 
   await ensureRuntimeIndexes();
@@ -371,6 +322,13 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
     { upsert: true, returnDocument: "after" },
   ) as SubscriptionReminder | null;
   if (!reminder) return { skipped: true, reason: "Unable to create reminder" };
+  logger.info({
+    reminderId: String(reminder._id),
+    userId,
+    reminderCount: reminder.reminderCount || 0,
+    status: reminder.status,
+    nextReminderDate: reminder.nextReminderDate || null,
+  }, "[REMINDER RECORD SAVED]");
 
   let immediateResult: Awaited<ReturnType<typeof deliverReminder>> | null = null;
   const shouldAttemptImmediate = config.immediateReminderEnabled !== false && Number(reminder.reminderCount || 0) === 0;
@@ -443,6 +401,15 @@ async function deliverReminder(
   const reminderIndex = Number(reminder.reminderCount || 0);
   const step = steps[reminderIndex];
   const maxCount = Math.min(Number(config.maximumReminderCount || steps.length || 1), steps.length || 1);
+  logger.info({
+    reminderId: String(reminder._id),
+    userId: String(reminder.userId),
+    trigger,
+    reminderIndex,
+    maxCount,
+    stepId: step?.id || "",
+    stepName: step?.name || "",
+  }, "[REMINDER DELIVERY START]");
 
   if (reminderIndex >= maxCount || !step) {
     await collection("subscription_reminders").updateOne(
@@ -453,6 +420,13 @@ async function deliverReminder(
   }
 
   const user = await User.findById(reminder.userId).lean();
+  logger.info({
+    reminderId: String(reminder._id),
+    userId: String(reminder.userId),
+    userFound: Boolean(user),
+    email: user?.email || "",
+    isPremium: Boolean((user as any)?.isPremium),
+  }, "[REMINDER USER LOADED]");
   if (!user) {
     await collection("subscription_reminders").updateOne(
       { _id: reminder._id },
@@ -508,7 +482,20 @@ async function deliverReminder(
     notificationRecord = notifications[0] || await UserNotification.findOne({ dedupeKey });
     const created = notifications.length > 0;
     const alreadySent = String(notificationRecord?.pushStatus || "") === "sent";
-    const pushDelivery = notificationRecord && !alreadySent ? await sendReminderPushNotification(notificationRecord) : null;
+    logger.info({
+      reminderId: String(reminder._id),
+      notificationId: String(notificationRecord?._id || ""),
+      dedupeKey,
+      created,
+      alreadySent,
+      pushStatus: notificationRecord?.pushStatus || "",
+    }, "[REMINDER NOTIFICATION SAVED]");
+    const pushDelivery = notificationRecord && !alreadySent ? await sendPushForUserNotifications([notificationRecord]) : null;
+    logger.info({
+      reminderId: String(reminder._id),
+      notificationId: String(notificationRecord?._id || ""),
+      pushDelivery,
+    }, "[REMINDER PUSH RESPONSE]");
 
     if (!created) {
       notificationStatus = alreadySent ? "sent" : "skipped";
@@ -537,6 +524,13 @@ async function deliverReminder(
         { upsert: true, new: true },
       );
       const email = String((user as any).email || "").trim();
+      logger.info({
+        reminderId: String(reminder._id),
+        userId: String(reminder.userId),
+        to: email,
+        subject: render(emailSubject, values),
+        smtpConfigured: Boolean(settings?.smtp?.host && settings?.smtp?.fromEmail),
+      }, "[REMINDER EMAIL REQUEST]");
       if (!email) {
         emailStatus = "skipped";
         if (notificationRecord) {
@@ -553,6 +547,13 @@ async function deliverReminder(
           text: render(pushMessage || emailSubject, values),
         });
         emailStatus = result.skipped ? "skipped" : "sent";
+        logger.info({
+          reminderId: String(reminder._id),
+          userId: String(reminder.userId),
+          to: email,
+          emailStatus,
+          result,
+        }, "[REMINDER EMAIL RESPONSE]");
         if (result.reason) errorMessage = [errorMessage, result.reason].filter(Boolean).join("; ");
         if (notificationRecord) {
           notificationRecord.emailStatus = emailStatus;
@@ -666,6 +667,17 @@ async function deliverReminder(
       },
     },
   );
+
+  logger.info({
+    reminderId: String(reminder._id),
+    userId: String(reminder.userId),
+    reminderCount,
+    notificationStatus,
+    emailStatus,
+    errorMessage,
+    nextReminderDate,
+    finalStatus: maxReached ? "max_reached" : "pending",
+  }, "[REMINDER DELIVERY FINAL]");
 
   return { sent: notificationStatus === "sent" || emailStatus === "sent", notificationStatus, emailStatus };
 }

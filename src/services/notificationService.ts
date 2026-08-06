@@ -1,11 +1,18 @@
 import mongoose from "mongoose";
 import { PushDeviceToken, User, UserNotification } from "@api/db";
-import { getMessaging } from "../lib/firebase";
 import { logger } from "../lib/logger";
+import { isPushConfigured, sendPushToTokens } from "../lib/pushNotificationSender";
 
 type NotificationPayload = {
   title: string;
   body: string;
+  image?: string;
+  imageUrl?: string;
+  deepLink?: string;
+  linkUrl?: string;
+  category?: string;
+  priority?: "high" | "low" | string;
+  sound?: string;
   data?: Record<string, unknown>;
 };
 
@@ -17,26 +24,12 @@ type RegisterTokenInput = {
   appVersion?: string;
 };
 
-const INVALID_TOKEN_CODES = new Set([
-  "messaging/invalid-registration-token",
-  "messaging/registration-token-not-registered",
-  "messaging/invalid-argument",
-]);
-
 function normalizeData(data?: Record<string, unknown>) {
   return Object.entries(data ?? {}).reduce<Record<string, string>>((acc, [key, value]) => {
     if (value === undefined || value === null) return acc;
     acc[key] = typeof value === "string" ? value : JSON.stringify(value);
     return acc;
   }, {});
-}
-
-function chunk<T>(items: T[], size: number) {
-  const chunks: T[][] = [];
-  for (let index = 0; index < items.length; index += size) {
-    chunks.push(items.slice(index, index + size));
-  }
-  return chunks;
 }
 
 async function activeTokensForUsers(userIds: string[]) {
@@ -111,61 +104,34 @@ export async function removeInvalidTokens(tokens: string[]) {
 
 async function sendToTokens(tokens: string[], payload: NotificationPayload) {
   const uniqueTokens = [...new Set(tokens.filter(Boolean))];
-  const result = { successCount: 0, failureCount: 0, invalidTokens: [] as string[] };
+  const result = { successCount: 0, failureCount: 0, invalidTokens: [] as string[], errors: [] as string[] };
   if (!uniqueTokens.length) return result;
 
-  const messaging = getMessaging();
-  const data = normalizeData(payload.data);
-
-  for (const tokenChunk of chunk(uniqueTokens, 500)) {
-    const response = await messaging.sendEachForMulticast({
-      tokens: tokenChunk,
-      notification: {
-        title: payload.title,
-        body: payload.body,
-      },
-      data,
-      android: {
-        priority: "high",
-        notification: {
-          channelId: "default",
-          clickAction: "FLUTTER_NOTIFICATION_CLICK",
-          sound: "default",
-        },
-      },
-      apns: {
-        headers: {
-          "apns-priority": "10",
-        },
-        payload: {
-          aps: {
-            sound: "default",
-            contentAvailable: false,
-          },
-        },
-      },
-      webpush: {
-        notification: {
-          title: payload.title,
-          body: payload.body,
-          icon: "/icon-192.png",
-        },
-      },
-    });
-
-    result.successCount += response.successCount;
-    result.failureCount += response.failureCount;
-    response.responses.forEach((sendResponse, index) => {
-      const code = sendResponse.error?.code;
-      if (code && INVALID_TOKEN_CODES.has(code)) {
-        result.invalidTokens.push(tokenChunk[index]);
-      }
-    });
+  if (!isPushConfigured()) {
+    const error = "Firebase service account is not configured";
+    logger.error({ tokenCount: uniqueTokens.length, title: payload.title }, "[FCM CONFIG MISSING]");
+    result.failureCount = uniqueTokens.length;
+    result.errors.push(error);
+    return result;
   }
 
-  if (result.invalidTokens.length) {
-    await removeInvalidTokens(result.invalidTokens);
-  }
+  const delivery = await sendPushToTokens(uniqueTokens, {
+    title: payload.title,
+    body: payload.body,
+    image: payload.image || payload.imageUrl,
+    deepLink: payload.deepLink || payload.linkUrl || String(payload.data?.["deepLink"] || payload.data?.["linkUrl"] || "/notifications"),
+    linkUrl: payload.linkUrl || payload.deepLink || String(payload.data?.["linkUrl"] || payload.data?.["deepLink"] || "/notifications"),
+    category: payload.category || String(payload.data?.["notificationType"] || "custom"),
+    sound: payload.sound || "default",
+    priority: payload.priority || "high",
+    data: normalizeData(payload.data),
+  });
+  result.successCount = delivery.successCount || 0;
+  result.failureCount = delivery.failedCount || 0;
+  result.invalidTokens = delivery.invalidTokens || [];
+  result.errors = delivery.errors || [];
+
+  if (result.invalidTokens.length) await removeInvalidTokens(result.invalidTokens);
 
   return result;
 }
@@ -189,6 +155,11 @@ function payloadFromNotification(notification: any): NotificationPayload {
   return {
     title: String(notification.title || ""),
     body: String(notification.body || ""),
+    image: String(notification.imageUrl || ""),
+    deepLink: String(notification.linkUrl || "/notifications"),
+    linkUrl: String(notification.linkUrl || "/notifications"),
+    category: String(notification.type || "custom"),
+    priority: "high",
     data: {
       notificationId: String(notification._id || notification.id || ""),
       notificationType: String(notification.type || ""),
@@ -225,6 +196,11 @@ export async function sendPushForUserNotifications(notifications: any[]) {
         userId: String(notification.userId || ""),
         tokenCount: tokens.length,
       }, "[FCM TOKEN FOUND]");
+      logger.info({
+        notificationId: String(notification._id || notification.id || ""),
+        userId: String(notification.userId || ""),
+        payload: payloadFromNotification(notification),
+      }, "[FCM PAYLOAD READY]");
       const delivery = await sendToTokens(tokens, payloadFromNotification(notification));
       const attempted = delivery.successCount + delivery.failureCount;
       result.sentCount += attempted;
@@ -238,6 +214,7 @@ export async function sendPushForUserNotifications(notifications: any[]) {
         userId: String(notification.userId || ""),
         successCount: delivery.successCount,
         failedCount: delivery.failureCount,
+        errors: delivery.errors || [],
         pushStatus,
       }, pushStatus === "sent" ? "[FCM SENT SUCCESS]" : "[FCM SENT FAILED]");
       await UserNotification.updateOne(
@@ -245,7 +222,7 @@ export async function sendPushForUserNotifications(notifications: any[]) {
         {
           $set: {
             pushStatus,
-            pushError: pushStatus === "failed" ? "Push delivery failed" : "",
+            pushError: pushStatus === "failed" ? (delivery.errors?.[0] || "Push delivery failed") : "",
             sentAt: notification.sentAt || new Date(),
           },
         },
