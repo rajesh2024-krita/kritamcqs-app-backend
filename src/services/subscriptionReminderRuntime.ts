@@ -1,8 +1,9 @@
 import mongoose from "mongoose";
-import { InvoiceSettings, User } from "@api/db";
+import { InvoiceSettings, PushDeviceToken, User, UserNotification } from "@api/db";
 import { sendEmail } from "../lib/simple-email";
 import { logger } from "../lib/logger";
 import { insertUserNotifications } from "./notificationService";
+import { isPushConfigured, sendPushToTokens } from "../lib/pushNotificationSender";
 
 type ReminderStep = {
   id?: string;
@@ -162,6 +163,128 @@ function placeholders(user: any, reminder: SubscriptionReminder, config: Reminde
     CurrentDate: now.toLocaleDateString("en-IN"),
     ExpiryDate: "",
   };
+}
+
+async function activeTokensForReminderUser(userId: unknown) {
+  const userIdString = String(userId || "").trim();
+  if (!userIdString) return [];
+  const objectIds = mongoose.isValidObjectId(userIdString) ? [new mongoose.Types.ObjectId(userIdString)] : [];
+  const tokens = await PushDeviceToken.find({
+    $or: [
+      { userId: userIdString },
+      ...(objectIds.length ? [{ userId: { $in: objectIds } }] : []),
+    ],
+    enabled: true,
+    active: { $ne: false },
+  }).select("token");
+  return [...new Set(tokens.map((item: any) => String(item.token || "").trim()).filter(Boolean))];
+}
+
+async function disableInvalidReminderTokens(tokens: string[]) {
+  const invalidTokens = [...new Set(tokens.map((token) => String(token || "").trim()).filter(Boolean))];
+  if (!invalidTokens.length) return;
+
+  await PushDeviceToken.updateMany(
+    { token: { $in: invalidTokens } },
+    { $set: { enabled: false, active: false, lastUpdated: new Date() } },
+  );
+}
+
+function reminderNotificationPayload(notification: any) {
+  const linkUrl = String(notification.linkUrl || "/notifications");
+  const type = String(notification.type || "subscription");
+  return {
+    title: String(notification.title || ""),
+    body: String(notification.body || ""),
+    image: String(notification.imageUrl || ""),
+    deepLink: linkUrl,
+    linkUrl,
+    category: type,
+    priority: "high",
+    data: {
+      notificationId: String(notification._id || notification.id || ""),
+      notificationType: type,
+      deepLink: linkUrl,
+      linkUrl,
+      category: type,
+      ctaText: String(notification.ctaText || ""),
+      ctaConfigId: String(notification.ctaConfigId || ""),
+      imageUrl: String(notification.imageUrl || ""),
+    },
+  };
+}
+
+async function sendReminderPushNotification(notification: any) {
+  const result = { sentCount: 0, successCount: 0, failedCount: 0, noTokenCount: 0, skippedCount: 0, errors: [] as string[] };
+  if (!notification || notification.visibleInApp === false) {
+    result.skippedCount += 1;
+    return result;
+  }
+
+  logger.info({
+    notificationId: String(notification._id || notification.id || ""),
+    userId: String(notification.userId || ""),
+    type: notification.type,
+    title: notification.title,
+  }, "[NOTIFICATION SAVED]");
+
+  const tokens = await activeTokensForReminderUser(notification.userId);
+  logger.info({
+    notificationId: String(notification._id || notification.id || ""),
+    userId: String(notification.userId || ""),
+    tokenCount: tokens.length,
+  }, "[FCM TOKEN FOUND]");
+
+  if (!tokens.length) {
+    result.noTokenCount += 1;
+    await UserNotification.updateOne(
+      { _id: notification._id },
+      { $set: { pushStatus: "no_token", pushError: "", sentAt: notification.sentAt || new Date() } },
+    );
+    return result;
+  }
+
+  if (!isPushConfigured()) {
+    const error = "Firebase service account is not configured";
+    result.failedCount += 1;
+    result.errors.push(error);
+    await UserNotification.updateOne(
+      { _id: notification._id },
+      { $set: { pushStatus: "failed", pushError: error, sentAt: notification.sentAt || new Date() } },
+    );
+    return result;
+  }
+
+  try {
+    const delivery = await sendPushToTokens(tokens, reminderNotificationPayload(notification));
+    await disableInvalidReminderTokens(delivery.invalidTokens || []);
+    result.sentCount += delivery.attempted || 0;
+    result.successCount += delivery.successCount || 0;
+    result.failedCount += delivery.failedCount || 0;
+    result.errors.push(...(delivery.errors || []));
+
+    const pushStatus = (delivery.successCount || 0) > 0 ? "sent" : "failed";
+    await UserNotification.updateOne(
+      { _id: notification._id },
+      {
+        $set: {
+          pushStatus,
+          pushError: pushStatus === "failed" ? (delivery.errors?.[0] || "Push delivery failed") : "",
+          sentAt: notification.sentAt || new Date(),
+        },
+      },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Push delivery failed";
+    result.failedCount += 1;
+    result.errors.push(message);
+    await UserNotification.updateOne(
+      { _id: notification._id },
+      { $set: { pushStatus: "failed", pushError: message, sentAt: notification.sentAt || new Date() } },
+    );
+  }
+
+  return { ...result, errors: [...new Set(result.errors)] };
 }
 
 async function ensureRuntimeIndexes() {
@@ -415,7 +538,7 @@ async function deliverReminder(
 
   try {
     const dedupeKey = `subscription-reminder:${String(reminder._id)}:${reminderNumber}`;
-    const { notifications, pushDelivery } = await insertUserNotifications(
+    const { notifications } = await insertUserNotifications(
       [
         {
           dedupeKey,
@@ -439,10 +562,11 @@ async function deliverReminder(
           sentAt: new Date(),
         },
       ],
-      { autoPush: true },
+      { autoPush: false },
     );
     notificationRecord = notifications[0] || null;
     const created = notifications.length > 0;
+    const pushDelivery = notificationRecord ? await sendReminderPushNotification(notificationRecord) : null;
 
     if (!created) {
       notificationStatus = "skipped";
