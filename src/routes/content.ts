@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { DashboardCarouselBanner, ExplanationPreviewTemplate, OfferTimerSettings, Subscription, SubscriptionFreeCard, SubscriptionPageTemplate, SubscriptionStatCard, User } from "@api/db";
+import { DashboardCarouselBanner, ExplanationPreviewTemplate, OfferTimerSettings, Subscription, SubscriptionFreeCard, SubscriptionPageTemplate, SubscriptionStatCard, User, WebsiteContent } from "@api/db";
 
 const router: IRouter = Router();
 
@@ -18,6 +18,22 @@ router.get("/dashboard-carousel", async (_req, res) => {
     .sort({ displayOrder: 1, createdAt: 1 })
     .lean();
   res.json({ banners: banners.map(mapId) });
+});
+
+router.get("/free-user-subscription-cta", async (_req, res) => {
+  const item = await WebsiteContent.findOne({ key: "free-user-subscription-cta", status: "published" }).lean();
+  const content = item?.content && typeof item.content === "object" ? item.content : {};
+  res.json({
+    data: {
+      enabled: content.enabled !== false,
+      eyebrow: content.eyebrow || "NEET & JEE Unlock",
+      title: content.title || "Go Premium",
+      description: content.description || "Unlock unlimited questions, weak area analysis, and smart revision.",
+      imageUrl: content.imageUrl || "",
+      ctaText: content.ctaText || "View Plans",
+      ctaLink: content.ctaLink || "/subscription",
+    },
+  });
 });
 
 router.get("/subscription-page-template", async (_req, res) => {
