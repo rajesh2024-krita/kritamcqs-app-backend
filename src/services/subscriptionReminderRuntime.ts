@@ -213,6 +213,17 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
   const userObjectId = new mongoose.Types.ObjectId(userId);
   const reminderCollection = collection("subscription_reminders");
   const activeKey = `subscription-reminder:${String(userObjectId)}`;
+  const existingSequence = await reminderCollection.findOne({
+    activeKey,
+    purchaseCompleted: false,
+  }) as SubscriptionReminder | null;
+  if (existingSequence && existingSequence.status !== "pending") {
+    return {
+      skipped: true,
+      reason: `Reminder sequence is ${existingSequence.status || "not pending"}`,
+      reminder: { ...existingSequence, id: String(existingSequence._id), _id: undefined },
+    };
+  }
   const legacyPending = await reminderCollection.findOne({
     userId: userObjectId,
     status: "pending",
@@ -324,7 +335,7 @@ async function deliverReminder(
   if (reminderIndex >= maxCount || !step) {
     await collection("subscription_reminders").updateOne(
       { _id: reminder._id },
-      { $set: { status: "max_reached", updatedAt: new Date() }, $unset: { immediateReminderSending: "", activeKey: "", scheduledReminderSending: "" } },
+      { $set: { status: "max_reached", updatedAt: new Date() }, $unset: { immediateReminderSending: "", scheduledReminderSending: "" } },
     );
     return { sent: false, reason: "Maximum reminder count reached" };
   }
@@ -455,7 +466,7 @@ async function deliverReminder(
         updatedAt: new Date(),
       },
       $unset: {
-        ...(maxReached ? { nextReminderDate: "", activeKey: "" } : {}),
+        ...(maxReached ? { nextReminderDate: "" } : {}),
         ...(trigger === "immediate" ? { immediateReminderSending: "" } : {}),
         ...(trigger === "scheduled" ? { scheduledReminderSending: "" } : {}),
       },
