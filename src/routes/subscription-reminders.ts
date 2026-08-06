@@ -3,7 +3,7 @@ import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import {
   completeSubscriptionReminders,
   trackSubscriptionReminder,
-} from "../services/subscriptionReminderRuntime";
+} from "../services/subscriptionReminderNotificationCenterRuntime";
 
 const router: IRouter = Router();
 

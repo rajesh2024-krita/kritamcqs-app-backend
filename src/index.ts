@@ -5,7 +5,7 @@ import { logger } from "./lib/logger";
 import { createServer } from "node:http";
 import { startExpiryReminderWorker } from "./lib/invoices";
 import { startAppleSubscriptionExpiryWorker } from "./jobs/appleSubscriptionExpiry";
-import { startSubscriptionReminderWorker } from "./services/subscriptionReminderRuntime";
+import { startSubscriptionReminderWorker } from "./services/subscriptionReminderNotificationCenterRuntime";
 import { startAppUsageRetentionWorker } from "./services/appUsageRetentionService";
 
 const rawPort = process.env["PORT"];
