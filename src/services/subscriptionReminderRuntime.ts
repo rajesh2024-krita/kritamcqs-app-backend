@@ -535,9 +535,9 @@ async function deliverReminder(
   const pushCtaText = step.push?.ctaText || step.inApp?.ctaText || "Open";
   const emailSubject = step.email?.subject || config.emailSubject || pushTitle;
   const emailBody = step.email?.body || config.emailTemplate || pushMessage;
+  const dedupeKey = `subscription-reminder:${String(reminder._id)}:${reminderNumber}`;
 
   try {
-    const dedupeKey = `subscription-reminder:${String(reminder._id)}:${reminderNumber}`;
     const { notifications } = await insertUserNotifications(
       [
         {
@@ -649,6 +649,57 @@ async function deliverReminder(
         errorMessage,
         retryCount: 0,
         payload: { trigger, reminderNumber: reminderCount, reminderId: step.id || "", reminderName: step.name || "" },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    },
+    { upsert: true },
+  );
+
+  await collection("notificationhistories").updateOne(
+    { "logs.reminderDedupeKey": dedupeKey },
+    {
+      $setOnInsert: {
+        campaignName: `${config.reminderName || "Reminder Subscription"} - ${step.name || `Reminder ${reminderNumber}`}`,
+        deliveryType: "both",
+        title: render(pushTitle, values),
+        message: render(pushMessage, values),
+        image: "",
+        deepLink: pushLink || "/subscription",
+        ctaConfigId: "",
+        ctaText: pushCtaText,
+        targetScreen: "subscription",
+        emailTemplateId: "",
+        emailTemplateKey: "notification_reminder",
+        emailSubject: render(emailSubject, values),
+        emailBody: render(emailBody, values),
+        targetType: "reminder_subscription",
+        selectedUsers: [String(reminder.userId)],
+        category: "subscription",
+        sound: "default",
+        priority: "high",
+        sentCount: notificationStatus === "sent" ? 1 : 0,
+        successCount: notificationStatus === "sent" ? 1 : 0,
+        failedCount: notificationStatus === "failed" ? 1 : 0,
+        noTokenCount: notificationStatus === "skipped" && errorMessage.includes("No active push token") ? 1 : 0,
+        emailSentCount: emailStatus === "sent" ? 1 : 0,
+        emailFailedCount: emailStatus === "failed" ? 1 : 0,
+        emailSkippedCount: emailStatus === "skipped" ? 1 : 0,
+        logs: [{
+          channel: "reminder_subscription",
+          status: notificationStatus === "failed" || emailStatus === "failed" ? "failed" : "sent",
+          reminderDedupeKey: dedupeKey,
+          reminderId: String(reminder._id),
+          reminderNumber,
+          trigger,
+          error: errorMessage,
+        }],
+        status: notificationStatus === "failed" || emailStatus === "failed"
+          ? (notificationStatus === "sent" || emailStatus === "sent" ? "partial" : "failed")
+          : "sent",
+        createdBy: "",
+        createdByName: "Reminder Subscription",
+        sentAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
       },
