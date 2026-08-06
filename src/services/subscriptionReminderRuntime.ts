@@ -46,7 +46,7 @@ type ReminderConfiguration = {
   emailSubject?: string;
   emailTemplate?: string;
   reminders?: ReminderStep[];
-  platform?: "Android" | "iOS" | "Both";
+  platform?: "Android" | "iOS" | "Web" | "Both";
   applicablePlan?: string;
   priority?: number;
 };
@@ -564,14 +564,14 @@ async function deliverReminder(
       ],
       { autoPush: false },
     );
-    notificationRecord = notifications[0] || null;
+    notificationRecord = notifications[0] || await UserNotification.findOne({ dedupeKey });
     const created = notifications.length > 0;
-    const pushDelivery = notificationRecord ? await sendReminderPushNotification(notificationRecord) : null;
+    const alreadySent = String(notificationRecord?.pushStatus || "") === "sent";
+    const pushDelivery = notificationRecord && !alreadySent ? await sendReminderPushNotification(notificationRecord) : null;
 
     if (!created) {
-      notificationStatus = "skipped";
-      emailStatus = "skipped";
-      errorMessage = "Duplicate reminder notification skipped";
+      notificationStatus = alreadySent ? "sent" : "skipped";
+      errorMessage = alreadySent ? "" : "Duplicate reminder notification reused";
     } else if ((pushDelivery?.successCount || 0) > 0) {
       notificationStatus = "sent";
     } else if ((pushDelivery?.failedCount || 0) > 0) {
