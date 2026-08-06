@@ -74,7 +74,21 @@ function dateWithDelay(stage: ReminderStage, eventTime = new Date()) {
 }
 
 function isFailureEvent(value: string) {
-  return ["cancelled", "canceled", "failed", "timeout", "timed_out", "abandoned", "incomplete", "payment_failed", "payment_cancelled"].includes(
+  return [
+    "cancelled",
+    "canceled",
+    "failed",
+    "timeout",
+    "timed_out",
+    "abandoned",
+    "incomplete",
+    "razorpay_closed",
+    "payment_failed",
+    "payment_cancelled",
+    "payment_timeout",
+    "app_closed_during_payment",
+    "subscription_abandoned",
+  ].includes(
     String(value || "").toLowerCase(),
   );
 }
@@ -164,7 +178,8 @@ async function stopIfPurchased(job: ReminderJob) {
     await collection(JOB_COLLECTION).updateOne({ _id: job._id }, { $set: { status: "cancelled", stoppedReason: "User not found", updatedAt: new Date() } });
     return { stopped: true, user: null };
   }
-  if ((user as any).isPremium || String((user as any).lastPurchase?.paymentStatus || "").toLowerCase() === "success") {
+  const purchaseStatus = String((user as any).lastPurchase?.paymentStatus || "").toLowerCase();
+  if ((user as any).isPremium || purchaseStatus === "success" || purchaseStatus === "paid") {
     await collection(JOB_COLLECTION).updateMany(
       { activeKey: job.activeKey, status: "pending" },
       { $set: { status: "cancelled", purchaseCompleted: true, stoppedReason: "Subscription completed", updatedAt: new Date() } },
