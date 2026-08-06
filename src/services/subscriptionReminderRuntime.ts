@@ -2,7 +2,33 @@ import mongoose from "mongoose";
 import { InvoiceSettings, User } from "@api/db";
 import { sendEmail } from "../lib/simple-email";
 import { logger } from "../lib/logger";
-import { createUserNotification } from "./notificationService";
+import { upsertUserNotificationOnInsert } from "./notificationService";
+
+type ReminderStep = {
+  id?: string;
+  name?: string;
+  enabled?: boolean;
+  delayAmount?: number;
+  delayUnit?: "Minutes" | "Hours" | "Days";
+  inApp?: {
+    title?: string;
+    message?: string;
+    ctaText?: string;
+    ctaAction?: string;
+  };
+  push?: {
+    title?: string;
+    message?: string;
+    ctaText?: string;
+    ctaAction?: string;
+  };
+  email?: {
+    subject?: string;
+    body?: string;
+    ctaText?: string;
+    ctaUrl?: string;
+  };
+};
 
 type ReminderConfiguration = {
   _id: mongoose.Types.ObjectId;
@@ -18,6 +44,7 @@ type ReminderConfiguration = {
   notificationMessage?: string;
   emailSubject?: string;
   emailTemplate?: string;
+  reminders?: ReminderStep[];
   platform?: "Android" | "iOS" | "Both";
   applicablePlan?: string;
   priority?: number;
@@ -35,6 +62,8 @@ type SubscriptionReminder = {
   nextReminderDate?: Date;
   purchaseCompleted?: boolean;
 };
+
+let indexesReady: Promise<void> | null = null;
 
 const eventTypes = new Set([
   "razorpay_closed",
@@ -66,9 +95,53 @@ function unitToMs(unit?: string) {
   return 60 * 1000;
 }
 
-function nextDate(config: ReminderConfiguration, repeat = false) {
-  const amount = repeat ? config.repeatInterval : config.initialDelay;
-  return new Date(Date.now() + Math.max(0, Number(amount || 0)) * unitToMs(config.delayUnit));
+function dateAfter(amount?: number, unit?: string) {
+  return new Date(Date.now() + Math.max(0, Number(amount || 0)) * unitToMs(unit));
+}
+
+function enabledReminderSteps(config: ReminderConfiguration): ReminderStep[] {
+  const configured = Array.isArray(config.reminders) ? config.reminders.filter((item) => item?.enabled !== false) : [];
+  if (configured.length) return configured;
+  return [
+    {
+      id: "legacy-initial",
+      enabled: true,
+      delayAmount: config.initialDelay,
+      delayUnit: config.delayUnit,
+      push: {
+        title: config.notificationTitle,
+        message: config.notificationMessage,
+        ctaAction: "/subscription",
+      },
+      email: {
+        subject: config.emailSubject,
+        body: config.emailTemplate,
+        ctaUrl: "/subscription",
+      },
+    },
+    ...Array.from({ length: Math.max(0, Number(config.maximumReminderCount || 1) - 1) }, (_item, index) => ({
+      id: `legacy-repeat-${index + 1}`,
+      enabled: true,
+      delayAmount: config.repeatInterval,
+      delayUnit: config.delayUnit,
+      push: {
+        title: config.notificationTitle,
+        message: config.notificationMessage,
+        ctaAction: "/subscription",
+      },
+      email: {
+        subject: config.emailSubject,
+        body: config.emailTemplate,
+        ctaUrl: "/subscription",
+      },
+    })),
+  ];
+}
+
+function nextDateForStep(config: ReminderConfiguration, stepIndex: number) {
+  const step = enabledReminderSteps(config)[stepIndex];
+  if (!step) return null;
+  return dateAfter(step.delayAmount, step.delayUnit || config.delayUnit);
 }
 
 function render(template: string | undefined, values: Record<string, string>) {
@@ -79,6 +152,7 @@ function placeholders(user: any, reminder: SubscriptionReminder, config: Reminde
   const now = new Date();
   return {
     UserName: String(user?.name || user?.email || user?.mobile || "Learner"),
+    StudentName: String(user?.name || user?.email || user?.mobile || "Learner"),
     PlanName: String(reminder.subscriptionPlan || config.applicablePlan || "Premium Plan"),
     PlanPrice: "",
     PurchaseLink: "https://app.kritamcqs.com/cta?target=%2Fsubscription",
@@ -86,6 +160,19 @@ function placeholders(user: any, reminder: SubscriptionReminder, config: Reminde
     CurrentDate: now.toLocaleDateString("en-IN"),
     ExpiryDate: "",
   };
+}
+
+async function ensureRuntimeIndexes() {
+  if (!indexesReady) {
+    indexesReady = Promise.all([
+      collection("subscription_reminders").createIndex(
+        { activeKey: 1 },
+        { unique: true, partialFilterExpression: { activeKey: { $type: "string", $gt: "" } } },
+      ),
+      collection("reminder_logs").createIndex({ reminderId: 1, "payload.reminderNumber": 1 }),
+    ]).then(() => undefined);
+  }
+  await indexesReady;
 }
 
 async function enabledConfig(platform: "Android" | "iOS" | "Web") {
@@ -122,13 +209,19 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
   const config = await enabledConfig(platform);
   if (!config) return { skipped: true, reason: "No enabled reminder configuration" };
 
+  await ensureRuntimeIndexes();
   const userObjectId = new mongoose.Types.ObjectId(userId);
   const reminderCollection = collection("subscription_reminders");
-  const existing = await reminderCollection.findOne({
+  const activeKey = `subscription-reminder:${String(userObjectId)}`;
+  const legacyPending = await reminderCollection.findOne({
     userId: userObjectId,
     status: "pending",
     purchaseCompleted: false,
-  }) as SubscriptionReminder | null;
+    activeKey: { $exists: false },
+  });
+  if (legacyPending) {
+    await reminderCollection.updateOne({ _id: legacyPending._id }, { $set: { activeKey, updatedAt: new Date() } });
+  }
   const updateFields = {
     subscriptionId: String(body?.subscriptionId || body?.orderId || ""),
     subscriptionPlan: String(body?.subscriptionPlan || body?.planName || ""),
@@ -138,37 +231,30 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
     updatedAt: new Date(),
   };
 
-  let reminder: SubscriptionReminder;
-  let immediateResult: Awaited<ReturnType<typeof deliverReminder>> | null = null;
-  const shouldAttemptImmediate = config.immediateReminderEnabled !== false && Number(existing?.reminderCount || 0) === 0;
-
-  if (existing) {
-    await reminderCollection.updateOne(
-      { _id: existing._id },
-      {
-        $set: {
-          ...updateFields,
-          ...(shouldAttemptImmediate ? {} : { nextReminderDate: existing.reminderCount ? existing.nextReminderDate : nextDate(config) }),
-        },
-      },
-    );
-    reminder = { ...existing, ...updateFields };
-  } else {
-    const insert = {
-      ...updateFields,
-      ...(shouldAttemptImmediate ? {} : { nextReminderDate: nextDate(config) }),
-      userId: userObjectId,
+  const reminder = await reminderCollection.findOneAndUpdate(
+    {
+      activeKey,
       status: "pending",
-      reminderCount: 0,
       purchaseCompleted: false,
-      createdAt: new Date(),
-    };
-    const result = await reminderCollection.insertOne(insert);
-    reminder = {
-      ...insert,
-      _id: result.insertedId,
-    };
-  }
+    },
+    {
+      $set: updateFields,
+      $setOnInsert: {
+        activeKey,
+        userId: userObjectId,
+        status: "pending",
+        reminderCount: 0,
+        purchaseCompleted: false,
+        createdAt: new Date(),
+        ...(config.immediateReminderEnabled === false ? { nextReminderDate: nextDateForStep(config, 0) } : {}),
+      },
+    },
+    { upsert: true, returnDocument: "after" },
+  ) as SubscriptionReminder | null;
+  if (!reminder) return { skipped: true, reason: "Unable to create reminder" };
+
+  let immediateResult: Awaited<ReturnType<typeof deliverReminder>> | null = null;
+  const shouldAttemptImmediate = config.immediateReminderEnabled !== false && Number(reminder.reminderCount || 0) === 0;
 
   if (shouldAttemptImmediate) {
     const lock = await reminderCollection.updateOne(
@@ -190,7 +276,7 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
 
     if (lock.modifiedCount > 0) {
       try {
-        immediateResult = await deliverReminder(reminder, config, "initial", "immediate");
+        immediateResult = await deliverReminder(reminder, config, "immediate");
       } catch (error) {
         await reminderCollection.updateOne(
           { _id: reminder._id },
@@ -220,6 +306,7 @@ export async function completeSubscriptionReminders(userId: string) {
         stoppedReason: "Subscription purchased successfully",
         updatedAt: new Date(),
       },
+      $unset: { activeKey: "" },
     },
   );
 }
@@ -227,13 +314,17 @@ export async function completeSubscriptionReminders(userId: string) {
 async function deliverReminder(
   reminder: SubscriptionReminder,
   config: ReminderConfiguration,
-  nextMode: "initial" | "repeat",
   trigger: "immediate" | "scheduled",
 ) {
-  if (Number(reminder.reminderCount || 0) >= Number(config.maximumReminderCount || 1)) {
+  const steps = enabledReminderSteps(config);
+  const reminderIndex = Number(reminder.reminderCount || 0);
+  const step = steps[reminderIndex];
+  const maxCount = Math.min(Number(config.maximumReminderCount || steps.length || 1), steps.length || 1);
+
+  if (reminderIndex >= maxCount || !step) {
     await collection("subscription_reminders").updateOne(
       { _id: reminder._id },
-      { $set: { status: "max_reached", updatedAt: new Date() }, $unset: { immediateReminderSending: "" } },
+      { $set: { status: "max_reached", updatedAt: new Date() }, $unset: { immediateReminderSending: "", activeKey: "", scheduledReminderSending: "" } },
     );
     return { sent: false, reason: "Maximum reminder count reached" };
   }
@@ -242,7 +333,10 @@ async function deliverReminder(
   if (!user) {
     await collection("subscription_reminders").updateOne(
       { _id: reminder._id },
-      { $set: { status: "stopped", stoppedReason: "User not found", updatedAt: new Date() }, $unset: { immediateReminderSending: "" } },
+      {
+        $set: { status: "stopped", stoppedReason: "User not found", updatedAt: new Date() },
+        $unset: { immediateReminderSending: "", scheduledReminderSending: "", activeKey: "" },
+      },
     );
     return { sent: false, reason: "User not found" };
   }
@@ -251,19 +345,26 @@ async function deliverReminder(
   let notificationStatus = "not_applicable";
   let emailStatus = "not_applicable";
   let errorMessage = "";
+  const reminderNumber = reminderIndex + 1;
+  const pushTitle = step.push?.title || step.inApp?.title || config.notificationTitle || "";
+  const pushMessage = step.push?.message || step.inApp?.message || config.notificationMessage || "";
+  const pushLink = step.push?.ctaAction || step.inApp?.ctaAction || "/subscription";
+  const emailSubject = step.email?.subject || config.emailSubject || pushTitle;
+  const emailBody = step.email?.body || config.emailTemplate || pushMessage;
 
   if (config.channels !== "Email") {
     try {
-      const reminderNumber = Number(reminder.reminderCount || 0) + 1;
-      const notification = await createUserNotification(
+      const dedupeKey = `subscription-reminder:${String(reminder._id)}:${reminderNumber}`;
+      const { notification, created } = await upsertUserNotificationOnInsert(
+        { dedupeKey },
         {
           userId: String(reminder.userId),
           type: "subscription",
-          title: render(config.notificationTitle, values),
-          body: render(config.notificationMessage, values),
-          dedupeKey: `subscription-reminder:${String(reminder._id)}:${reminderNumber}`,
+          title: render(pushTitle, values),
+          body: render(pushMessage, values),
+          dedupeKey,
           visibleInApp: true,
-          linkUrl: "/subscription",
+          linkUrl: pushLink,
           targetGroup: "subscription_abandoned",
           deliveryMode: config.channels === "Both" ? "email_push" : "push",
           notificationStatus: "created",
@@ -273,8 +374,10 @@ async function deliverReminder(
         },
         { autoPush: true },
       );
-      notificationStatus = notification.pushStatus === "sent" ? "sent" : notification.pushStatus || "created";
-      if (notification.pushError) errorMessage = notification.pushError;
+      notificationStatus = created
+        ? notification?.pushStatus === "sent" ? "sent" : notification?.pushStatus || "created"
+        : "skipped";
+      if (notification?.pushError) errorMessage = notification.pushError;
     } catch (error) {
       notificationStatus = "failed";
       errorMessage = error instanceof Error ? error.message : "Push notification failed";
@@ -295,9 +398,9 @@ async function deliverReminder(
         const result = await sendEmail({
           smtp: settings.smtp,
           to: email,
-          subject: render(config.emailSubject, values),
-          html: render(config.emailTemplate, values),
-          text: render(config.notificationMessage || config.emailSubject, values),
+          subject: render(emailSubject, values),
+          html: render(emailBody, values),
+          text: render(pushMessage || emailSubject, values),
         });
         emailStatus = result.skipped ? "skipped" : "sent";
         if (result.reason) errorMessage = [errorMessage, result.reason].filter(Boolean).join("; ");
@@ -308,22 +411,29 @@ async function deliverReminder(
     }
   }
 
-  const reminderCount = Number(reminder.reminderCount || 0) + 1;
-  const maxReached = reminderCount >= Number(config.maximumReminderCount || 1);
+  const reminderCount = reminderNumber;
+  const maxReached = reminderCount >= maxCount;
+  const nextReminderDate = maxReached ? null : nextDateForStep(config, reminderCount);
 
-  await collection("reminder_logs").insertOne({
-    reminderId: reminder._id,
-    configurationId: config._id,
-    userId: reminder.userId,
-    notificationStatus,
-    emailStatus,
-    status: notificationStatus === "failed" || emailStatus === "failed" ? "Failed" : "Success",
-    errorMessage,
-    retryCount: 0,
-    payload: { trigger, reminderNumber: reminderCount },
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  });
+  await collection("reminder_logs").updateOne(
+    { reminderId: reminder._id, "payload.reminderNumber": reminderCount },
+    {
+      $setOnInsert: {
+        reminderId: reminder._id,
+        configurationId: config._id,
+        userId: reminder.userId,
+        notificationStatus,
+        emailStatus,
+        status: notificationStatus === "failed" || emailStatus === "failed" ? "Failed" : "Success",
+        errorMessage,
+        retryCount: 0,
+        payload: { trigger, reminderNumber: reminderCount, reminderId: step.id || "", reminderName: step.name || "" },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    },
+    { upsert: true },
+  );
 
   await collection("subscription_reminders").updateOne(
     { _id: reminder._id },
@@ -331,14 +441,15 @@ async function deliverReminder(
       $set: {
         reminderCount,
         lastReminderDate: new Date(),
-        ...(maxReached ? {} : { nextReminderDate: nextDate(config, nextMode === "repeat") }),
+        ...(nextReminderDate ? { nextReminderDate } : {}),
         ...(trigger === "immediate" ? { immediateReminderSentAt: new Date() } : {}),
         status: maxReached ? "max_reached" : "pending",
         updatedAt: new Date(),
       },
       $unset: {
-        ...(maxReached ? { nextReminderDate: "" } : {}),
+        ...(maxReached ? { nextReminderDate: "", activeKey: "" } : {}),
         ...(trigger === "immediate" ? { immediateReminderSending: "" } : {}),
+        ...(trigger === "scheduled" ? { scheduledReminderSending: "" } : {}),
       },
     },
   );
@@ -357,12 +468,15 @@ async function sendDueReminder(reminder: SubscriptionReminder) {
   if (!config) {
     await collection("subscription_reminders").updateOne(
       { _id: reminder._id },
-      { $set: { status: "stopped", stoppedReason: "Reminder disabled", updatedAt: new Date() } },
+      {
+        $set: { status: "stopped", stoppedReason: "Reminder disabled", updatedAt: new Date() },
+        $unset: { activeKey: "", scheduledReminderSending: "" },
+      },
     );
     return;
   }
 
-  await deliverReminder(reminder, config, "repeat", "scheduled");
+  await deliverReminder(reminder, config, "scheduled");
 }
 
 export async function runDueSubscriptionReminders(limit = 50) {
@@ -378,8 +492,28 @@ export async function runDueSubscriptionReminders(limit = 50) {
 
   for (const reminder of reminders) {
     try {
-      await sendDueReminder(reminder);
+      const lockedReminder = await collection("subscription_reminders").findOneAndUpdate(
+        {
+          _id: reminder._id,
+          status: "pending",
+          purchaseCompleted: false,
+          nextReminderDate: { $lte: new Date() },
+          scheduledReminderSending: { $ne: true },
+        },
+        {
+          $set: {
+            scheduledReminderSending: true,
+            updatedAt: new Date(),
+          },
+        },
+        { returnDocument: "after" },
+      ) as SubscriptionReminder | null;
+      if (lockedReminder) await sendDueReminder(lockedReminder);
     } catch (error) {
+      await collection("subscription_reminders").updateOne(
+        { _id: reminder._id },
+        { $unset: { scheduledReminderSending: "" }, $set: { updatedAt: new Date() } },
+      );
       logger.error({ err: error, reminderId: String(reminder._id) }, "Subscription reminder delivery failed");
     }
   }
@@ -389,6 +523,9 @@ let scheduler: NodeJS.Timeout | null = null;
 
 export function startSubscriptionReminderWorker() {
   if (scheduler) return scheduler;
+  ensureRuntimeIndexes().catch((error) => {
+    logger.error({ err: error }, "Subscription reminder index setup failed");
+  });
   scheduler = setInterval(() => {
     runDueSubscriptionReminders().catch((error) => {
       logger.error({ err: error }, "Subscription reminder worker failed");
