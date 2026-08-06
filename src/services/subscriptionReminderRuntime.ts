@@ -64,6 +64,7 @@ type SubscriptionReminder = {
 };
 
 let indexesReady: Promise<void> | null = null;
+const REMINDER_SEQUENCE_COOLDOWN_MS = 60 * 60 * 1000;
 
 const eventTypes = new Set([
   "razorpay_closed",
@@ -218,11 +219,28 @@ export async function trackSubscriptionReminder(userId: string, body: any) {
     purchaseCompleted: false,
   }) as SubscriptionReminder | null;
   if (existingSequence && existingSequence.status !== "pending") {
-    return {
-      skipped: true,
-      reason: `Reminder sequence is ${existingSequence.status || "not pending"}`,
-      reminder: { ...existingSequence, id: String(existingSequence._id), _id: undefined },
-    };
+    const settledAt = new Date(
+      (existingSequence as any).lastReminderDate
+        || (existingSequence as any).updatedAt
+        || (existingSequence as any).createdAt
+        || 0,
+    ).getTime();
+    const stillCoolingDown = Number.isFinite(settledAt) && Date.now() - settledAt < REMINDER_SEQUENCE_COOLDOWN_MS;
+    if (!stillCoolingDown) {
+      await reminderCollection.updateOne(
+        { _id: existingSequence._id },
+        {
+          $unset: { activeKey: "", immediateReminderSending: "", scheduledReminderSending: "" },
+          $set: { updatedAt: new Date() },
+        },
+      );
+    } else {
+      return {
+        skipped: true,
+        reason: `Reminder sequence is ${existingSequence.status || "not pending"}`,
+        reminder: { ...existingSequence, id: String(existingSequence._id), _id: undefined },
+      };
+    }
   }
   const legacyPending = await reminderCollection.findOne({
     userId: userObjectId,
@@ -356,6 +374,7 @@ async function deliverReminder(
   let notificationStatus = "not_applicable";
   let emailStatus = "not_applicable";
   let errorMessage = "";
+  let notificationRecord: any = null;
   const reminderNumber = reminderIndex + 1;
   const pushTitle = step.push?.title || step.inApp?.title || config.notificationTitle || "";
   const pushMessage = step.push?.message || step.inApp?.message || config.notificationMessage || "";
@@ -387,6 +406,7 @@ async function deliverReminder(
       ],
       { autoPush: true },
     );
+    notificationRecord = notifications[0] || null;
     const created = notifications.length > 0;
 
     if (!created) {
@@ -416,6 +436,11 @@ async function deliverReminder(
     const email = String((user as any).email || "").trim();
     if (!email) {
       emailStatus = "skipped";
+      if (notificationRecord) {
+        notificationRecord.emailStatus = "skipped";
+        notificationRecord.emailError = "User email missing";
+        await notificationRecord.save();
+      }
     } else {
       const result = await sendEmail({
         smtp: settings.smtp,
@@ -426,10 +451,22 @@ async function deliverReminder(
       });
       emailStatus = result.skipped ? "skipped" : "sent";
       if (result.reason) errorMessage = [errorMessage, result.reason].filter(Boolean).join("; ");
+      if (notificationRecord) {
+        notificationRecord.emailStatus = emailStatus;
+        notificationRecord.emailError = result.reason ? String(result.reason) : "";
+        if (emailStatus === "sent") notificationRecord.sentAt = new Date();
+        await notificationRecord.save();
+      }
     }
   } catch (error) {
     emailStatus = "failed";
-    errorMessage = [errorMessage, error instanceof Error ? error.message : "Email failed"].filter(Boolean).join("; ");
+    const emailError = error instanceof Error ? error.message : "Email failed";
+    errorMessage = [errorMessage, emailError].filter(Boolean).join("; ");
+    if (notificationRecord) {
+      notificationRecord.emailStatus = "failed";
+      notificationRecord.emailError = emailError;
+      await notificationRecord.save();
+    }
   }
 
   const reminderCount = reminderNumber;
