@@ -29,7 +29,6 @@ import notificationsRouter from "./notifications";
 import iapRouter from "./iap";
 import appleRouter from "./apple";
 import scriptsRouter from "./scripts";
-import subscriptionRemindersRouter from "./subscription-reminders";
 import paymentCancelledNotificationsRouter from "./payment-cancelled-notifications";
 import nationalCompetitionsRouter from "./national-competitions";
 
@@ -63,7 +62,6 @@ router.use("/notifications", notificationsRouter);
 router.use("/iap", iapRouter);
 router.use("/apple", appleRouter);
 router.use("/scripts", scriptsRouter);
-router.use("/subscription-reminders", subscriptionRemindersRouter);
 router.use("/payment-cancelled-notifications", paymentCancelledNotificationsRouter);
 router.use("/national-competitions", nationalCompetitionsRouter);
 router.use("/admin-auth", adminAuthRouter);

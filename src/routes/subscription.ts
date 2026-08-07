@@ -8,7 +8,6 @@ import { CreateOrderBody, VerifyPaymentBody } from "@api/zod";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { generateInvoiceForSubscription, getInvoiceSettings, regenerateInvoicePdf } from "../lib/invoices";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
-import { completeSubscriptionReminders, trackSubscriptionReminder } from "../services/subscriptionReminderNotificationCenterRuntime";
 import { completePaymentCancelledAutoNotifications, logPaymentCancelledAutoCheckoutStarted, trackPaymentCancelledAutoNotification } from "../services/paymentCancelledAutoNotificationRuntime";
 
 const router: IRouter = Router();
@@ -25,16 +24,6 @@ async function trackFailedPaymentReminder(req: AuthenticatedRequest, pendingSubs
       razorpayOrderId: String(pendingSubscription?.razorpayOrderId || ""),
       paymentId: String(pendingSubscription?.razorpayPaymentId || ""),
       planName: planName || String(pendingSubscription?.planId || "Premium"),
-      planId: String(pendingSubscription?.planId || ""),
-      eventTime: new Date().toISOString(),
-    });
-    await trackSubscriptionReminder(String(req.userId), {
-      eventType,
-      subscriptionId: String(pendingSubscription?._id || ""),
-      orderId: String(pendingSubscription?.razorpayOrderId || ""),
-      razorpayOrderId: String(pendingSubscription?.razorpayOrderId || ""),
-      paymentId: String(pendingSubscription?.razorpayPaymentId || ""),
-      subscriptionPlan: planName || String(pendingSubscription?.planId || "Premium"),
       planId: String(pendingSubscription?.planId || ""),
       eventTime: new Date().toISOString(),
     });
@@ -781,10 +770,7 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
         transactionDate: pendingSubscription.transactionDate,
       },
     });
-    await Promise.all([
-      completeSubscriptionReminders(String(req.userId)),
-      completePaymentCancelledAutoNotifications(String(req.userId)),
-    ]);
+    await completePaymentCancelledAutoNotifications(String(req.userId));
 
     try {
       const invoiceSettings = await getInvoiceSettings();

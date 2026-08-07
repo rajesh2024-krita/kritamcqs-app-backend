@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { listEnabledScripts } from "../services/subscriptionReminderRuntime";
+import { listEnabledScripts } from "../services/scriptRuntime";
 
 const router: IRouter = Router();
 
