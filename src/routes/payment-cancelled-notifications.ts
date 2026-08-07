@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import { mongoose } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import {
   completePaymentCancelledAutoNotifications,
@@ -7,7 +8,34 @@ import {
 
 const router: IRouter = Router();
 
-router.post("/track", requireAuth, async (req: AuthenticatedRequest, res, next) => {
+async function writeRouteLog(req: any) {
+  try {
+    const db = mongoose.connection.db;
+    if (!db) return;
+    const eventType = String(req.body?.eventType || req.body?.status || "payment_cancelled");
+    const paymentReference = String(req.body?.paymentReference || req.body?.orderId || req.body?.razorpayOrderId || req.body?.subscriptionId || req.body?.paymentId || Date.now());
+    await db.collection("payment_cancelled_auto_notification_logs").insertOne({
+      jobId: "",
+      userId: "",
+      configId: "",
+      stageId: "app-route",
+      stageName: "App Route",
+      eventType,
+      paymentReference,
+      status: "app_route_received",
+      reason: "App called payment cancelled notification tracking endpoint",
+      hasAuthorization: Boolean(req.headers?.authorization),
+      createdAt: new Date(),
+    });
+  } catch {
+    // Do not block payment flow because diagnostic logging failed.
+  }
+}
+
+router.post("/track", async (req, _res, next) => {
+  await writeRouteLog(req);
+  next();
+}, requireAuth, async (req: AuthenticatedRequest, res, next) => {
   try {
     const data = await trackPaymentCancelledAutoNotification(String(req.userId), req.body);
     res.status(201).json({
