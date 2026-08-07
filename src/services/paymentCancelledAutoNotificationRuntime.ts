@@ -150,18 +150,45 @@ async function writeLog(job: Pick<AutoJob, "_id" | "userId" | "configId" | "stag
   });
 }
 
+async function writeEventLog(payload: Record<string, unknown>) {
+  await collection(LOG_COLLECTION).insertOne({
+    jobId: "",
+    userId: String(payload["userId"] || ""),
+    configId: String(payload["configId"] || ""),
+    stageId: "event",
+    stageName: "Payment Cancelled Event",
+    eventType: String(payload["eventType"] || ""),
+    paymentReference: String(payload["paymentReference"] || ""),
+    ...payload,
+    createdAt: new Date(),
+  });
+}
+
 export async function trackPaymentCancelledAutoNotification(userId: string, body: any) {
   const eventType = clean(body?.eventType || body?.status || "payment_cancelled");
-  if (!isPaymentCancelledEvent(eventType)) return { skipped: true, reason: "Event is not a cancelled, failed, or abandoned payment" };
-  if (!mongoose.isValidObjectId(userId)) return { skipped: true, reason: "Invalid user id" };
-
-  const config = await enabledConfig();
-  if (!config) return { skipped: true, reason: "Payment Cancelled Auto Notification is disabled" };
-
   const eventTime = body?.eventTime ? new Date(body.eventTime) : new Date();
   const paymentReference = clean(body?.paymentReference || body?.orderId || body?.razorpayOrderId || body?.subscriptionId || body?.paymentId || eventTime.getTime());
+  if (!isPaymentCancelledEvent(eventType)) {
+    await writeEventLog({ userId, eventType, paymentReference, status: "event_skipped", reason: "Event is not a cancelled, failed, or abandoned payment" });
+    return { skipped: true, reason: "Event is not a cancelled, failed, or abandoned payment" };
+  }
+  if (!mongoose.isValidObjectId(userId)) {
+    await writeEventLog({ userId, eventType, paymentReference, status: "event_skipped", reason: "Invalid user id" });
+    return { skipped: true, reason: "Invalid user id" };
+  }
+
+  const config = await enabledConfig();
+  if (!config) {
+    await writeEventLog({ userId, eventType, paymentReference, status: "event_skipped", reason: "Subscription Cancellation Reminder is disabled or missing" });
+    return { skipped: true, reason: "Payment Cancelled Auto Notification is disabled" };
+  }
+
   const activeKey = `payment-cancelled-auto:${userId}:${paymentReference}`;
   const stages = (config.reminders || []).filter((stage) => stage.enabled !== false);
+  if (!stages.length) {
+    await writeEventLog({ userId, configId: String(config._id), eventType, paymentReference, status: "event_skipped", reason: "No enabled reminder stages" });
+    return { skipped: true, reason: "No enabled reminder stages" };
+  }
   const jobs = stages.map((stage, index) => ({
     configId: String(config._id),
     userId: String(userId),
@@ -191,8 +218,15 @@ export async function trackPaymentCancelledAutoNotification(userId: string, body
     stageName: "Payment Cancelled",
     eventType,
     paymentReference,
-    status: "payment_cancelled",
+    status: "event_received",
+    reason: "Payment cancellation event received from app",
     scheduledCount: jobs.length,
+    scheduledJobs: jobs.map((job) => ({
+      stageId: job.stageId,
+      stageName: job.stageName,
+      dueAt: job.dueAt,
+      dedupeKey: job.dedupeKey,
+    })),
     createdAt: new Date(),
   });
   await collection(CONFIG_COLLECTION).updateOne(
@@ -206,6 +240,7 @@ export async function trackPaymentCancelledAutoNotification(userId: string, body
     const writeErrors = error?.writeErrors || [];
     const duplicateOnly = error?.code === 11000 || (writeErrors.length > 0 && writeErrors.every((item: any) => item?.code === 11000));
     if (!duplicateOnly) throw error;
+    await writeEventLog({ userId, configId: String(config._id), eventType, paymentReference, status: "event_duplicate", reason: "Duplicate reminder jobs already exist", activeKey });
     logger.warn({ userId, activeKey }, "[PAYMENT_CANCELLED_AUTO_DUPLICATE_JOB_SKIPPED]");
   }
 
