@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { startExpiryReminderWorker } from "./lib/invoices";
 import { startAppleSubscriptionExpiryWorker } from "./jobs/appleSubscriptionExpiry";
 import { startSubscriptionReminderWorker } from "./services/subscriptionReminderNotificationCenterRuntime";
+import { startPaymentCancelledAutoNotificationWorker } from "./services/paymentCancelledAutoNotificationRuntime";
 import { startAppUsageRetentionWorker } from "./services/appUsageRetentionService";
 
 const rawPort = process.env["PORT"];
@@ -66,6 +67,7 @@ async function listenWithFallback(preferredPort: number) {
     startExpiryReminderWorker();
     startAppleSubscriptionExpiryWorker();
     startSubscriptionReminderWorker();
+    startPaymentCancelledAutoNotificationWorker();
     startAppUsageRetentionWorker();
     logger.info(connection, "Connected to MongoDB");
   } catch (err) {

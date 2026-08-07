@@ -9,6 +9,7 @@ import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { generateInvoiceForSubscription, getInvoiceSettings, regenerateInvoicePdf } from "../lib/invoices";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 import { completeSubscriptionReminders, trackSubscriptionReminder } from "../services/subscriptionReminderNotificationCenterRuntime";
+import { completePaymentCancelledAutoNotifications, trackPaymentCancelledAutoNotification } from "../services/paymentCancelledAutoNotificationRuntime";
 
 const router: IRouter = Router();
 const RENEWAL_WINDOW_DAYS = 5;
@@ -16,6 +17,17 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 async function trackFailedPaymentReminder(req: AuthenticatedRequest, pendingSubscription: any, eventType: string, planName = "") {
   try {
+    await trackPaymentCancelledAutoNotification(String(req.userId), {
+      eventType,
+      paymentReference: String(pendingSubscription?.razorpayOrderId || pendingSubscription?._id || ""),
+      subscriptionId: String(pendingSubscription?._id || ""),
+      orderId: String(pendingSubscription?.razorpayOrderId || ""),
+      razorpayOrderId: String(pendingSubscription?.razorpayOrderId || ""),
+      paymentId: String(pendingSubscription?.razorpayPaymentId || ""),
+      planName: planName || String(pendingSubscription?.planId || "Premium"),
+      planId: String(pendingSubscription?.planId || ""),
+      eventTime: new Date().toISOString(),
+    });
     await trackSubscriptionReminder(String(req.userId), {
       eventType,
       subscriptionId: String(pendingSubscription?._id || ""),
@@ -761,7 +773,10 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
         transactionDate: pendingSubscription.transactionDate,
       },
     });
-    await completeSubscriptionReminders(String(req.userId));
+    await Promise.all([
+      completeSubscriptionReminders(String(req.userId)),
+      completePaymentCancelledAutoNotifications(String(req.userId)),
+    ]);
 
     try {
       const invoiceSettings = await getInvoiceSettings();
