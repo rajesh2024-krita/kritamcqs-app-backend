@@ -9,7 +9,7 @@ import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { generateInvoiceForSubscription, getInvoiceSettings, regenerateInvoicePdf } from "../lib/invoices";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 import { completeSubscriptionReminders, trackSubscriptionReminder } from "../services/subscriptionReminderNotificationCenterRuntime";
-import { completePaymentCancelledAutoNotifications, trackPaymentCancelledAutoNotification } from "../services/paymentCancelledAutoNotificationRuntime";
+import { completePaymentCancelledAutoNotifications, logPaymentCancelledAutoCheckoutStarted, trackPaymentCancelledAutoNotification } from "../services/paymentCancelledAutoNotificationRuntime";
 
 const router: IRouter = Router();
 const RENEWAL_WINDOW_DAYS = 5;
@@ -530,7 +530,7 @@ router.post("/create-order", requireAuth, async (req: AuthenticatedRequest, res)
       },
     });
 
-    await Subscription.findOneAndUpdate(
+    const pendingSubscription = await Subscription.findOneAndUpdate(
       { userId: req.userId, razorpayOrderId: order.id, status: "pending" },
       {
         userId: req.userId,
@@ -556,6 +556,14 @@ router.post("/create-order", requireAuth, async (req: AuthenticatedRequest, res)
       },
       { upsert: true, new: true, setDefaultsOnInsert: true },
     );
+    await logPaymentCancelledAutoCheckoutStarted(String(req.userId), {
+      orderId: order.id,
+      razorpayOrderId: order.id,
+      subscriptionId: String(pendingSubscription?._id || ""),
+      planId: body.planId,
+      planName: plan.name,
+      eventTime: new Date().toISOString(),
+    }).catch((error) => req.log.warn({ err: error, orderId: order.id }, "Payment cancelled checkout-start log failed"));
     req.log.info({ orderId: order.id, userId: req.userId, planId: body.planId, amount: pricing.finalAmount, taxAmount: pricing.taxAmount, discountAmount: pricing.discountAmount }, "Razorpay order created and pending subscription stored");
 
     res.json({

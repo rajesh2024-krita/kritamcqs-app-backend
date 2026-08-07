@@ -247,6 +247,20 @@ export async function trackPaymentCancelledAutoNotification(userId: string, body
   return { skipped: false, activeKey, scheduledCount: jobs.length };
 }
 
+export async function logPaymentCancelledAutoCheckoutStarted(userId: string, body: any) {
+  const eventTime = body?.eventTime ? new Date(body.eventTime) : new Date();
+  const paymentReference = clean(body?.paymentReference || body?.orderId || body?.razorpayOrderId || body?.subscriptionId || body?.paymentId || eventTime.getTime());
+  await writeEventLog({
+    userId,
+    eventType: "checkout_started",
+    paymentReference,
+    status: "checkout_started",
+    reason: "Subscription checkout/order created; waiting for payment success or cancellation event",
+    planName: clean(body?.planName || body?.subscriptionPlan || "Premium"),
+    planId: clean(body?.planId || body?.subscriptionId || ""),
+  });
+}
+
 export async function completePaymentCancelledAutoNotifications(userId: string) {
   await collection(JOB_COLLECTION).updateMany(
     { userId: String(userId), status: "pending" },
