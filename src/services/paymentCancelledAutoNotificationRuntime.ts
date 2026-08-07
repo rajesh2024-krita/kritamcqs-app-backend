@@ -14,6 +14,10 @@ type ReminderStage = {
   delayUnit: "Minutes" | "Hours" | "Days";
   title: string;
   message: string;
+  pushTitle?: string;
+  pushMessage?: string;
+  inAppTitle?: string;
+  inAppMessage?: string;
   image?: string;
   deepLink?: string;
   ctaText?: string;
