@@ -153,8 +153,8 @@ export async function broadcast(payload: NotificationPayload) {
 
 function payloadFromNotification(notification: any): NotificationPayload {
   return {
-    title: String(notification.title || ""),
-    body: String(notification.body || ""),
+    title: String(notification.pushTitle || notification.title || ""),
+    body: String(notification.pushBody || notification.body || ""),
     image: String(notification.imageUrl || ""),
     deepLink: String(notification.linkUrl || "/notifications"),
     linkUrl: String(notification.linkUrl || "/notifications"),

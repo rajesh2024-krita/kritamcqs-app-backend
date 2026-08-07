@@ -6,6 +6,8 @@ export interface IUserNotification extends Document {
   type: string;
   title: string;
   body: string;
+  pushTitle?: string;
+  pushBody?: string;
   dedupeKey: string;
   visibleInApp: boolean;
   linkUrl?: string;
@@ -36,6 +38,8 @@ const userNotificationSchema = new Schema<IUserNotification>(
     type: { type: String, required: true, index: true },
     title: { type: String, required: true },
     body: { type: String, required: true },
+    pushTitle: { type: String, default: "" },
+    pushBody: { type: String, default: "" },
     dedupeKey: { type: String, required: true, unique: true, index: true },
     visibleInApp: { type: Boolean, default: true, index: true },
     linkUrl: { type: String, default: "" },
