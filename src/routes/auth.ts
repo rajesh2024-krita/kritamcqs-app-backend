@@ -270,11 +270,17 @@ router.post("/register", async (req, res) => {
     }
     const email = normalizeEmail(req.body?.email);
     const password = normalizePassword(req.body?.password);
-    const name = String(req.body?.name || "").trim();
+    const name = String(req.body?.fullName || req.body?.name || "").trim();
     const state = normalizeLocation(req.body?.state);
     const district = normalizeLocation(req.body?.district);
-    if (!email || !password || name.length < 2 || state.length < 2 || district.length < 2) {
-      res.status(400).json({ error: "invalid_registration", message: "Enter a valid name, email, password, state, and district." });
+    const country = normalizeLocation(req.body?.country);
+    const city = normalizeLocation(req.body?.city);
+    const mobile = String(req.body?.mobile || "").replace(/\D/g, "").trim();
+    const examMode = String(req.body?.examMode || "").trim();
+    const level = String(req.body?.level || "").trim();
+    const userType = String(req.body?.userType || "").trim();
+    if (!email || !password || name.length < 2) {
+      res.status(400).json({ error: "invalid_registration", message: "Enter a valid full name, email, and password." });
       return;
     }
     const existing = await User.findOne({ email });
@@ -286,8 +292,14 @@ router.post("/register", async (req, res) => {
       email,
       name,
       passwordHash: hashPassword(password),
-      state,
-      district,
+      ...(mobile ? { mobile } : {}),
+      ...(state ? { state } : {}),
+      ...(district ? { district } : {}),
+      ...(country ? { country } : {}),
+      ...(city ? { city } : {}),
+      ...(examMode ? { examMode } : {}),
+      ...(level ? { level } : {}),
+      ...(userType ? { userType } : {}),
       loginProvider: "EMAIL",
       authTypes: ["email"],
       onboardingComplete: false,
