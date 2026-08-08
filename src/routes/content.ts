@@ -36,6 +36,73 @@ router.get("/free-user-subscription-cta", async (_req, res) => {
   });
 });
 
+const dynamicCtaCardScreens = ["dashboard", "daily-test", "daily-test-result", "profile"] as const;
+
+const dynamicCtaCardDefaults: Record<(typeof dynamicCtaCardScreens)[number], any> = {
+  dashboard: {
+    enabled: true,
+    eyebrow: "NEET & JEE Unlock",
+    title: "Go Premium",
+    description: "Unlock unlimited questions, weak area analysis, and smart revision.",
+    imageUrl: "",
+    ctaText: "View Plans",
+    ctaLink: "/subscription",
+  },
+  "daily-test": {
+    enabled: true,
+    eyebrow: "NEET & JEE Unlock",
+    title: "Go Premium",
+    description: "Unlock unlimited questions, weak area analysis, and smart revision.",
+    imageUrl: "",
+    ctaText: "View Plans",
+    ctaLink: "/subscription",
+  },
+  "daily-test-result": {
+    enabled: true,
+    eyebrow: "Score Booster",
+    title: "Improve Faster",
+    description: "Upgrade for deeper result insights, weak area practice, and unlimited revision.",
+    imageUrl: "",
+    ctaText: "Upgrade Now",
+    ctaLink: "/subscription",
+  },
+  profile: {
+    enabled: true,
+    eyebrow: "Unlock Your Potential",
+    title: "Go Premium",
+    description: "Access premium features, exclusive content, and smarter practice tools.",
+    imageUrl: "",
+    ctaText: "Buy Now",
+    ctaLink: "/subscription",
+  },
+};
+
+function sanitizeDynamicCtaCard(value: any = {}, screen: (typeof dynamicCtaCardScreens)[number]) {
+  const defaults = dynamicCtaCardDefaults[screen];
+  return {
+    enabled: value.enabled !== false,
+    eyebrow: String(value.eyebrow || defaults.eyebrow).trim().slice(0, 80),
+    title: String(value.title || defaults.title).trim().slice(0, 120),
+    description: String(value.description || defaults.description).trim().slice(0, 500),
+    imageUrl: String(value.imageUrl || "").trim().slice(0, 500),
+    ctaText: String(value.ctaText || defaults.ctaText).trim().slice(0, 80),
+    ctaLink: String(value.ctaLink || defaults.ctaLink).trim().slice(0, 500),
+  };
+}
+
+router.get("/dynamic-cta-cards", async (_req, res) => {
+  const item = await WebsiteContent.findOne({ key: "dynamic-cta-cards", status: "published" }).lean();
+  const legacy = await WebsiteContent.findOne({ key: "free-user-subscription-cta", status: "published" }).lean();
+  const content = item?.content && typeof item.content === "object" ? item.content : {};
+  const legacyContent = legacy?.content && typeof legacy.content === "object" ? legacy.content : {};
+  const data = dynamicCtaCardScreens.reduce<Record<string, any>>((cards, screen) => {
+    const source = screen === "dashboard" && !(content as any)[screen] ? legacyContent : (content as any)[screen];
+    cards[screen] = sanitizeDynamicCtaCard(source, screen);
+    return cards;
+  }, {});
+  res.json({ data });
+});
+
 router.get("/subscription-page-template", async (_req, res) => {
   const template = await SubscriptionPageTemplate.findOne({ status: "published" })
     .sort({ publishedAt: -1, updatedAt: -1 })
