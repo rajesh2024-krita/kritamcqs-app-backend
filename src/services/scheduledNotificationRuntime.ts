@@ -12,7 +12,7 @@ const NotificationHistory =
   mongoose.models["NotificationHistory"]
   ?? mongoose.model("NotificationHistory", new Schema({}, { strict: false, timestamps: true }));
 
-const INTERVAL_MS = Number(process.env["SCHEDULED_NOTIFICATION_WORKER_INTERVAL_MS"] || 60_000);
+const INTERVAL_MS = Number(process.env["SCHEDULED_NOTIFICATION_WORKER_INTERVAL_MS"] || 15_000);
 let timer: NodeJS.Timeout | null = null;
 let running = false;
 
@@ -58,31 +58,52 @@ function normalizeAutomationDays(days: unknown) {
     .sort((left, right) => left - right);
 }
 
-function dateWithScheduleTime(baseDate: Date, scheduleTime: unknown) {
+const ASIA_KOLKATA_OFFSET_MS = 330 * 60 * 1000;
+
+function parseScheduleTime(scheduleTime: unknown) {
   const [hours, minutes] = String(scheduleTime || "00:00").split(":").map(Number);
-  const next = new Date(baseDate);
-  next.setHours(Number(hours || 0), Number(minutes || 0), 0, 0);
-  return next;
+  return {
+    hours: Math.max(0, Math.min(23, Number(hours || 0))),
+    minutes: Math.max(0, Math.min(59, Number(minutes || 0))),
+  };
+}
+
+function asiaKolkataParts(date = new Date()) {
+  const shifted = new Date(date.getTime() + ASIA_KOLKATA_OFFSET_MS);
+  return {
+    year: shifted.getUTCFullYear(),
+    month: shifted.getUTCMonth(),
+    date: shifted.getUTCDate(),
+    day: shifted.getUTCDay(),
+  };
+}
+
+function dateFromAsiaKolkataParts(year: number, month: number, date: number, scheduleTime: unknown) {
+  const { hours, minutes } = parseScheduleTime(scheduleTime);
+  return new Date(Date.UTC(year, month, date, hours, minutes, 0, 0) - ASIA_KOLKATA_OFFSET_MS);
 }
 
 function nextWeeklyDate(item: Record<string, any>, from = new Date()) {
   const days = normalizeAutomationDays(item["weeklyDays"]);
   if (!days.length) return null;
+  const parts = asiaKolkataParts(from);
   for (let offset = 0; offset <= 14; offset += 1) {
-    const candidate = dateWithScheduleTime(new Date(from.getFullYear(), from.getMonth(), from.getDate() + offset), item["scheduleTime"]);
-    if (days.includes(candidate.getDay()) && candidate.getTime() > from.getTime()) return candidate;
+    const candidate = dateFromAsiaKolkataParts(parts.year, parts.month, parts.date + offset, item["scheduleTime"]);
+    if (days.includes(asiaKolkataParts(candidate).day) && candidate.getTime() > from.getTime()) return candidate;
   }
   return null;
 }
 
 function nextMonthlyDate(item: Record<string, any>, from = new Date()) {
   const day = Math.max(1, Math.min(31, Number(item["monthlyDay"] || 1)));
+  const parts = asiaKolkataParts(from);
   for (let offset = 0; offset <= 14; offset += 1) {
-    const year = from.getFullYear();
-    const month = from.getMonth() + offset;
-    const lastDay = new Date(year, month + 1, 0).getDate();
+    const monthStart = new Date(Date.UTC(parts.year, parts.month + offset, 1));
+    const year = monthStart.getUTCFullYear();
+    const month = monthStart.getUTCMonth();
+    const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
     if (day > lastDay) continue;
-    const candidate = dateWithScheduleTime(new Date(year, month, day), item["scheduleTime"]);
+    const candidate = dateFromAsiaKolkataParts(year, month, day, item["scheduleTime"]);
     if (candidate.getTime() > from.getTime()) return candidate;
   }
   return null;
@@ -204,7 +225,7 @@ async function sendAutomationEmails(item: Record<string, any>, users: any[]) {
 }
 
 async function processAutomation(item: Record<string, any>) {
-  const scheduledFor = new Date(item["nextSendAt"] || item["scheduleDate"]);
+  const scheduledFor = new Date(item["nextScheduledAt"] || item["nextSendAt"] || item["scheduleDate"]);
   if (Number.isNaN(scheduledFor.getTime())) return null;
 
   const claim = await claimExecution(item, scheduledFor);
@@ -256,6 +277,7 @@ async function processAutomation(item: Record<string, any>) {
       $set: {
         status: next ? "pending" : status,
         scheduleDate: next,
+        nextScheduledAt: next,
         nextSendAt: next,
         sentAt: new Date(),
         lastSentAt: new Date(),
@@ -308,7 +330,7 @@ async function processAutomation(item: Record<string, any>) {
     );
   }
 
-  return { id: String(item["_id"]), status, audienceCount: users.length, nextSendAt: next };
+  return { id: String(item["_id"]), status, audienceCount: users.length, nextScheduledAt: next, nextSendAt: next };
 }
 
 export async function processDueScheduledNotifications(limit = 25) {
@@ -317,8 +339,8 @@ export async function processDueScheduledNotifications(limit = 25) {
     automationEnabled: true,
     status: "pending",
     scheduleType: { $in: ["weekly", "monthly"] },
-    $or: [{ nextSendAt: { $lte: now } }, { scheduleDate: { $lte: now } }],
-  }).sort({ nextSendAt: 1, scheduleDate: 1 }).limit(limit).lean();
+    $or: [{ nextScheduledAt: { $lte: now } }, { nextSendAt: { $lte: now } }, { scheduleDate: { $lte: now } }],
+  }).sort({ nextScheduledAt: 1, nextSendAt: 1, scheduleDate: 1 }).limit(limit).lean();
 
   const results = [];
   for (const item of items) {
