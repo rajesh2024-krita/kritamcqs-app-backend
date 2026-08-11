@@ -303,6 +303,7 @@ router.post("/register", async (req, res) => {
       loginProvider: "EMAIL",
       authTypes: ["email"],
       onboardingComplete: false,
+      requiresProfileCompletion: true,
       mobileVerified: false,
       isPremium: false,
       isAdmin: false,
@@ -354,6 +355,7 @@ router.post("/login", async (req, res) => {
     }
     user.authTypes = [...new Set([...(user.authTypes || []), "email"])];
     user.loginProvider = user.loginProvider || "EMAIL";
+    user.requiresProfileCompletion = !user.name || !user.email || !user.mobile || !user.state || !(user as any).district;
     await markLogin(user);
     res.json({ token: signUser(user, settings), user: userResponse(user), isNewUser: false });
   } catch (error) {
@@ -418,7 +420,7 @@ router.post("/google", async (req, res) => {
       user.profileImage = user.profileImage || googleUser.picture || "";
       user.authTypes = [...new Set([...(user.authTypes || []), "google"])];
       user.loginProvider = "GOOGLE";
-      user.requiresProfileCompletion = !user.name || !user.email;
+      user.requiresProfileCompletion = !user.name || !user.email || !user.mobile || !user.state || !(user as any).district;
     }
     await markLogin(user);
 
@@ -690,7 +692,7 @@ router.post("/apple", async (req, res) => {
       user.authTypes = [...new Set([...(user.authTypes || []), "apple"])];
       user.loginProvider = "APPLE";
       user.isAppleLogin = true;
-      user.requiresProfileCompletion = !user.name || !user.email;
+      user.requiresProfileCompletion = !user.name || !user.email || !user.mobile || !user.state || !(user as any).district;
     }
     await markLogin(user);
 

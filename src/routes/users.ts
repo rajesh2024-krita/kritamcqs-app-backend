@@ -611,7 +611,7 @@ router.post("/onboarding", requireAuth, async (req: AuthenticatedRequest, res) =
     const level = await resolveConfiguredLevel(body.level);
     const updated = await User.findByIdAndUpdate(
       req.userId,
-      { examMode, level, name: body.name, onboardingComplete: true, requiresProfileCompletion: false },
+      { examMode, level, name: body.name, onboardingComplete: true },
       { new: true }
     );
     if (!updated) {
@@ -644,8 +644,9 @@ router.post("/preferences", requireAuth, async (req: AuthenticatedRequest, res) 
       else unset["email"] = "";
     }
     if (body.address !== undefined) updates["address"] = body.address;
+    const nextMobile = body.mobile !== undefined ? String(body.mobile || "").replace(/\D/g, "").slice(0, 15) : String(req.user?.mobile || "").replace(/\D/g, "");
     if (body.mobile !== undefined) {
-      const mobile = String(body.mobile || "").replace(/\D/g, "").slice(0, 15);
+      const mobile = nextMobile;
       if (mobile) updates["mobile"] = mobile;
       else unset["mobile"] = "";
     }
@@ -659,8 +660,12 @@ router.post("/preferences", requireAuth, async (req: AuthenticatedRequest, res) 
     const nextEmail = body.email !== undefined ? String(body.email || "").trim() : String(req.user?.email || "").trim();
     const nextState = body.state !== undefined ? String(body.state || "").trim() : String(req.user?.state || "").trim();
     const nextDistrict = body.district !== undefined ? String(body.district || "").trim() : String((req.user as any)?.district || "").trim();
-    if (nextName.length >= 2 && nextEmail && nextState && nextDistrict) {
+    if (nextName.length >= 2 && nextEmail && nextState && nextDistrict && /^[6-9]\d{9}$/.test(nextMobile)) {
       updates["requiresProfileCompletion"] = false;
+    }
+    if (!/^[6-9]\d{9}$/.test(nextMobile) && (req.user as any)?.requiresProfileCompletion) {
+      res.status(400).json({ error: "mobile_required", message: "Enter a valid 10-digit mobile number." });
+      return;
     }
 
     const updated = await User.findByIdAndUpdate(
