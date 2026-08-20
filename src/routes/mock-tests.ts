@@ -17,6 +17,12 @@ function getTodayWeekdayKey(date = new Date()) {
 }
 
 function evaluateAvailability(mockTest: any, date = new Date()) {
+  if (mockTest.startDate && date < new Date(mockTest.startDate)) {
+    return { availableToday: false, availabilityText: "This mock test has not started yet" };
+  }
+  if (mockTest.endDate && date > new Date(mockTest.endDate)) {
+    return { availableToday: false, availabilityText: "This mock test is no longer available" };
+  }
   const mode = String(mockTest.availabilityMode || "all").toLowerCase();
   if (mode === "day_wise") {
     const today = date.getDate();
@@ -76,6 +82,12 @@ function normalizeMockTest(mockTest: any, extras: Record<string, unknown> = {}) 
     slug: raw.slug,
     description: raw.description ?? "",
     examType: raw.examType,
+    testType: raw.testType ?? "full",
+    subjectId: raw.subjectId ?? null,
+    subject: raw.subject ?? null,
+    difficulty: raw.difficulty ?? "mixed",
+    startDate: raw.startDate ?? null,
+    endDate: raw.endDate ?? null,
     patternPreset: raw.patternPreset ?? "CUSTOM",
     durationMinutes: Number(raw.durationMinutes ?? 0),
     totalQuestions: Number(raw.totalQuestions ?? raw.questionIds?.length ?? 0),
@@ -295,11 +307,15 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
     const userId = req.userId!;
     const requestedExamType = String(req.query["examType"] ?? user.examMode ?? "NEET").toUpperCase();
     const search = String(req.query["search"] ?? "").trim();
+    const requestedTestType = String(req.query["testType"] ?? "").toLowerCase();
+    const requestedSubjectId = String(req.query["subjectId"] ?? "").trim();
     const filters: Record<string, unknown> = { isActive: true };
 
     if (requestedExamType && requestedExamType !== "BOTH") {
       filters.examType = { $in: [requestedExamType, "BOTH"] };
     }
+    if (requestedTestType) filters.testType = requestedTestType === "full" ? { $in: ["full", null] } : requestedTestType;
+    if (requestedSubjectId) filters.subjectId = requestedSubjectId;
 
     if (search) {
       filters.$or = [
@@ -309,9 +325,10 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
     }
 
     const items = await MockTest.find(filters).sort({ createdAt: -1 });
-    const visibleItems = user.isPremium
+    const accessVisibleItems = user.isPremium
       ? await Promise.all(items.map((item) => refreshPremiumMockQuestionsIfNeeded(item)))
       : items.filter((item) => !item.isPremiumOnly);
+    const visibleItems = accessVisibleItems.filter((item) => item.testType !== "subject" || evaluateAvailability(item).availableToday);
 
     const visibleMockTestIds = visibleItems.map((item) => item.id);
     const [completedMockTestIds, attemptCountMap] = await Promise.all([
@@ -342,6 +359,47 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
   } catch (error) {
     req.log.error({ error }, "List mock tests failed");
     res.status(500).json({ error: "mock_tests_failed", message: "Failed to load mock tests" });
+  }
+});
+
+router.get("/performance/subject", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
+  try {
+    const examType = String(req.query["examType"] ?? "").toUpperCase();
+    const subjectId = String(req.query["subjectId"] ?? "").trim();
+    if (!["NEET", "JEE"].includes(examType) || !subjectId) {
+      res.status(400).json({ error: "invalid_subject_filter", message: "A valid exam mode and subject are required" });
+      return;
+    }
+    const tests = await MockTest.find({ testType: "subject", examType, subjectId }).select("_id title maxScore subject").lean();
+    const testMap = new Map(tests.map((test: any) => [String(test._id), test]));
+    const attempts = await SessionAttempt.find({
+      userId: req.userId!,
+      sourceSessionId: { $in: [...testMap.keys()] },
+      completedAt: { $ne: null },
+    }).sort({ completedAt: -1 }).lean();
+    const recentAttempts = attempts.map((attempt: any) => {
+      const test: any = testMap.get(String(attempt.sourceSessionId));
+      const maxScore = Number(test?.maxScore || 0);
+      return {
+        attemptId: String(attempt._id), mockTestId: String(attempt.sourceSessionId), mockTest: test?.title,
+        examMode: examType, subjectId, subject: test?.subject, score: Number(attempt.score || 0),
+        percentage: maxScore > 0 ? (Number(attempt.score || 0) / maxScore) * 100 : 0,
+        accuracy: Number(attempt.accuracy || 0), correct: Number(attempt.correctCount || 0),
+        incorrect: Number(attempt.incorrectCount || 0), unanswered: Number(attempt.skippedCount || 0),
+        timeTaken: Number(attempt.timeTaken || 0), attemptDate: attempt.completedAt,
+      };
+    });
+    const count = recentAttempts.length;
+    res.json({ success: true, data: {
+      examMode: examType, subjectId, testsAttempted: count,
+      averageScore: count ? recentAttempts.reduce((sum, row) => sum + row.score, 0) / count : 0,
+      averageAccuracy: count ? recentAttempts.reduce((sum, row) => sum + row.accuracy, 0) / count : 0,
+      bestScore: count ? Math.max(...recentAttempts.map((row) => row.score)) : 0,
+      recentAttempts,
+    } });
+  } catch (error) {
+    req.log.error({ error }, "Subject performance failed");
+    res.status(500).json({ error: "subject_performance_failed", message: "Failed to load subject performance" });
   }
 });
 
@@ -392,9 +450,30 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       return;
     }
 
+    if (item.testType === "subject") {
+      if (!["NEET", "JEE"].includes(item.examType) || !item.subjectId) {
+        res.status(400).json({ error: "invalid_subject_test", message: "This subject mock test is not configured correctly." });
+        return;
+      }
+      const subject = await Subject.findById(item.subjectId).select("_id name examType");
+      const validNames = item.examType === "NEET"
+        ? new Set(["biology", "physics", "chemistry"])
+        : new Set(["mathematics", "maths", "physics", "chemistry"]);
+      if (!subject || subject.examType !== item.examType || !validNames.has(String((subject as any).name || item.subject || "").trim().toLowerCase())) {
+        res.status(400).json({ error: "invalid_subject_test", message: "Invalid subject for this exam mode." });
+        return;
+      }
+    }
+
     const questions = await Question.find({ _id: { $in: item.questionIds } }).populate("questionTypeId");
     if (!questions.length) {
       res.status(400).json({ error: "mock_test_empty", message: "This mock test has no available questions." });
+      return;
+    }
+    if (item.testType === "subject" && questions.some((question: any) =>
+      String(question.subjectId) !== String(item.subjectId) || String(question.examMode).toUpperCase() !== item.examType
+    )) {
+      res.status(400).json({ error: "invalid_subject_questions", message: "One or more questions do not belong to this exam mode and subject." });
       return;
     }
 
@@ -445,6 +524,9 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       questionIds: sessionQuestions.map((question: any) => String(question._id)),
       filterSnapshot: {
         mockTestId: item.id,
+        testType: item.testType ?? "full",
+        examType: item.examType,
+        subjectId: item.subjectId ?? null,
         marksPerQuestion: item.marksPerQuestion,
         negativeMarks: item.negativeMarks,
         markingSchemeVersion: item.markingSchemeVersion,

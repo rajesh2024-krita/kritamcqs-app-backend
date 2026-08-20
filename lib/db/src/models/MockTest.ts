@@ -6,6 +6,12 @@ export interface IMockTest extends Document {
   slug: string;
   description?: string;
   examType: "NEET" | "JEE" | "BOTH";
+  testType: "full" | "subject";
+  subjectId?: string | null;
+  subject?: string | null;
+  difficulty?: string;
+  startDate?: Date | null;
+  endDate?: Date | null;
   patternPreset: "NEET_REAL" | "JEE_REAL" | "CUSTOM";
   durationMinutes: number;
   totalQuestions: number;
@@ -52,6 +58,12 @@ const MockTestSchema = new Schema<IMockTest>(
     slug: { type: String, required: true, trim: true, unique: true, index: true },
     description: String,
     examType: { type: String, enum: ["NEET", "JEE", "BOTH"], required: true, index: true },
+    testType: { type: String, enum: ["full", "subject"], default: "full", index: true },
+    subjectId: { type: String, default: null, index: true },
+    subject: { type: String, trim: true, default: null },
+    difficulty: { type: String, trim: true, default: "mixed" },
+    startDate: { type: Date, default: null },
+    endDate: { type: Date, default: null },
     patternPreset: { type: String, enum: ["NEET_REAL", "JEE_REAL", "CUSTOM"], default: "CUSTOM", index: true },
     durationMinutes: { type: Number, required: true, min: 1 },
     totalQuestions: { type: Number, required: true, min: 1 },
@@ -104,6 +116,7 @@ const MockTestSchema = new Schema<IMockTest>(
 );
 
 MockTestSchema.index({ examType: 1, isActive: 1, createdAt: -1 });
+MockTestSchema.index({ testType: 1, examType: 1, subjectId: 1, isActive: 1 });
 
 export const MockTest =
   mongoose.models["MockTest"] ?? mongoose.model<IMockTest>("MockTest", MockTestSchema);
