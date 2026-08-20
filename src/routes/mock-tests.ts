@@ -88,6 +88,9 @@ function normalizeMockTest(mockTest: any, extras: Record<string, unknown> = {}) 
     difficulty: raw.difficulty ?? "mixed",
     startDate: raw.startDate ?? null,
     endDate: raw.endDate ?? null,
+    generationMode: raw.generationMode ?? "fixed",
+    generationFrequency: raw.generationFrequency ?? "daily",
+    isOneTimeFree: Boolean(raw.isOneTimeFree),
     patternPreset: raw.patternPreset ?? "CUSTOM",
     durationMinutes: Number(raw.durationMinutes ?? 0),
     totalQuestions: Number(raw.totalQuestions ?? raw.questionIds?.length ?? 0),
@@ -292,9 +295,12 @@ async function selectPrioritizedMockQuestions({
 }
 
 function buildAccessExtras(mockTest: any, user: any, completedByUser: boolean) {
-  const isPremiumForUser = Boolean(mockTest.isPremiumOnly || completedByUser);
+  const oneTimeFreeUsed = Boolean(mockTest.testType === "subject" && mockTest.isOneTimeFree && completedByUser);
+  const legacyFullRetest = Boolean((mockTest.testType ?? "full") === "full" && completedByUser);
+  const isPremiumForUser = Boolean(mockTest.isPremiumOnly || oneTimeFreeUsed || legacyFullRetest);
   return {
     completedByUser,
+    oneTimeFreeUsed,
     isPremiumForUser,
     accessType: isPremiumForUser ? "premium" : "free",
     premiumLocked: Boolean(isPremiumForUser && !user?.isPremium),
@@ -309,7 +315,7 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
     const search = String(req.query["search"] ?? "").trim();
     const requestedTestType = String(req.query["testType"] ?? "").toLowerCase();
     const requestedSubjectId = String(req.query["subjectId"] ?? "").trim();
-    const filters: Record<string, unknown> = { isActive: true };
+    const filters: Record<string, unknown> = { isActive: true, isGenerationTemplate: { $ne: true } };
 
     if (requestedExamType && requestedExamType !== "BOTH") {
       filters.examType = { $in: [requestedExamType, "BOTH"] };
@@ -327,7 +333,7 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
     const items = await MockTest.find(filters).sort({ createdAt: -1 });
     const accessVisibleItems = user.isPremium
       ? await Promise.all(items.map((item) => refreshPremiumMockQuestionsIfNeeded(item)))
-      : items.filter((item) => !item.isPremiumOnly);
+      : items.filter((item) => !item.isPremiumOnly || item.testType === "subject");
     const visibleItems = accessVisibleItems.filter((item) => item.testType !== "subject" || evaluateAvailability(item).availableToday);
 
     const visibleMockTestIds = visibleItems.map((item) => item.id);
@@ -406,7 +412,7 @@ router.get("/performance/subject", requireAuth, requireOnboardingComplete, async
 router.get("/:id", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   try {
     let item = await MockTest.findById(req.params["id"]);
-    if (!item || !item.isActive) {
+    if (!item || !item.isActive || item.isGenerationTemplate) {
       res.status(404).json({ error: "mock_test_not_found", message: "Mock test not found" });
       return;
     }
@@ -430,7 +436,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
     const user = req.user!;
     const userId = req.userId!;
     let item = await MockTest.findById(req.params["id"]);
-    if (!item || !item.isActive) {
+    if (!item || !item.isActive || item.isGenerationTemplate) {
       res.status(404).json({ error: "mock_test_not_found", message: "Mock test not found" });
       return;
     }

@@ -12,6 +12,13 @@ export interface IMockTest extends Document {
   difficulty?: string;
   startDate?: Date | null;
   endDate?: Date | null;
+  generationMode: "fixed" | "automatic";
+  generationFrequency: "daily";
+  generationTime?: string;
+  isGenerationTemplate: boolean;
+  parentTemplateId?: string | null;
+  lastScheduledGenerationKey?: string;
+  isOneTimeFree: boolean;
   patternPreset: "NEET_REAL" | "JEE_REAL" | "CUSTOM";
   durationMinutes: number;
   totalQuestions: number;
@@ -64,6 +71,13 @@ const MockTestSchema = new Schema<IMockTest>(
     difficulty: { type: String, trim: true, default: "mixed" },
     startDate: { type: Date, default: null },
     endDate: { type: Date, default: null },
+    generationMode: { type: String, enum: ["fixed", "automatic"], default: "fixed", index: true },
+    generationFrequency: { type: String, enum: ["daily"], default: "daily" },
+    generationTime: { type: String, default: "00:00" },
+    isGenerationTemplate: { type: Boolean, default: false, index: true },
+    parentTemplateId: { type: String, default: null, index: true },
+    lastScheduledGenerationKey: { type: String, default: "" },
+    isOneTimeFree: { type: Boolean, default: false, index: true },
     patternPreset: { type: String, enum: ["NEET_REAL", "JEE_REAL", "CUSTOM"], default: "CUSTOM", index: true },
     durationMinutes: { type: Number, required: true, min: 1 },
     totalQuestions: { type: Number, required: true, min: 1 },
