@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { Chapter, MockTest, Question, QuestionAttempt, SessionAttempt, Subject, Year, mongoose } from "@api/db";
+import { Chapter, MockTest, Question, QuestionAttempt, SessionAttempt, Subject, Topic, Year, mongoose } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
 import { createLearningSession } from "../lib/learning";
@@ -98,6 +98,7 @@ function normalizeMockTest(mockTest: any, extras: Record<string, unknown> = {}) 
     questionIds: Array.isArray(raw.questionIds) ? raw.questionIds.map(String) : [],
     subjectIds: Array.isArray(raw.subjectIds) ? raw.subjectIds.map(String) : [],
     chapterIds: Array.isArray(raw.chapterIds) ? raw.chapterIds.map(String) : [],
+    topicIds: Array.isArray(raw.topicIds) ? raw.topicIds.map(String) : [],
     instructions: Array.isArray(raw.instructions) ? raw.instructions : [],
     marksPerQuestion: Number(raw.marksPerQuestion ?? 4),
     negativeMarks: Number(raw.negativeMarks ?? 1),
@@ -295,6 +296,15 @@ async function selectPrioritizedMockQuestions({
 }
 
 function buildAccessExtras(mockTest: any, user: any, completedByUser: boolean) {
+  if (mockTest.testType === "subject") {
+    return {
+      completedByUser,
+      oneTimeFreeUsed: false,
+      isPremiumForUser: true,
+      accessType: "premium",
+      premiumLocked: !user?.isPremium,
+    };
+  }
   const oneTimeFreeUsed = Boolean(mockTest.testType === "subject" && mockTest.isOneTimeFree && completedByUser);
   const legacyFullRetest = Boolean((mockTest.testType ?? "full") === "full" && completedByUser);
   const isPremiumForUser = Boolean(mockTest.isPremiumOnly || oneTimeFreeUsed || legacyFullRetest);
@@ -305,6 +315,38 @@ function buildAccessExtras(mockTest: any, user: any, completedByUser: boolean) {
     accessType: isPremiumForUser ? "premium" : "free",
     premiumLocked: Boolean(isPremiumForUser && !user?.isPremium),
   };
+}
+
+function requestedIds(value: unknown) {
+  return [...new Set((Array.isArray(value) ? value : []).map(toIdString).filter(Boolean))];
+}
+
+async function buildSubjectQuestionSet(item: any, body: any) {
+  const selectedChapterIds = requestedIds(body?.chapterIds);
+  const selectedTopicIds = requestedIds(body?.topicIds);
+  const allowedChapterIds = requestedIds(item.chapterIds);
+  const allowedTopicIds = requestedIds(item.topicIds);
+
+  if (!selectedChapterIds.length && !selectedTopicIds.length) {
+    throw Object.assign(new Error("Select at least one chapter or topic."), { statusCode: 400, code: "subject_selection_required" });
+  }
+  if (allowedChapterIds.length && selectedChapterIds.some((id) => !allowedChapterIds.includes(id))) {
+    throw Object.assign(new Error("A selected chapter is not enabled for this mock test."), { statusCode: 400, code: "invalid_chapter_selection" });
+  }
+  if (allowedTopicIds.length && selectedTopicIds.some((id) => !allowedTopicIds.includes(id))) {
+    throw Object.assign(new Error("A selected topic is not enabled for this mock test."), { statusCode: 400, code: "invalid_topic_selection" });
+  }
+
+  const match: Record<string, unknown> = { subjectId: item.subjectId, examMode: item.examType };
+  if (selectedTopicIds.length) match.topicId = { $in: selectedTopicIds.flatMap(buildIdVariants) };
+  if (selectedChapterIds.length) match.chapterId = { $in: selectedChapterIds.flatMap(buildIdVariants) };
+  const targetCount = Math.max(1, Number(item.totalQuestions || 1));
+  const questions = await Question.find(match).populate("questionTypeId").limit(Math.max(targetCount * 10, 500));
+  const selected = shuffleList(questions).slice(0, targetCount);
+  if (!selected.length) {
+    throw Object.assign(new Error("No questions are available for the selected chapters and topics."), { statusCode: 400, code: "no_matching_questions" });
+  }
+  return { questions: selected, selectedChapterIds, selectedTopicIds };
 }
 
 router.get("/", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
@@ -409,6 +451,25 @@ router.get("/performance/subject", requireAuth, requireOnboardingComplete, async
   }
 });
 
+router.get("/:id/subject-options", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.user?.isPremium) return res.status(403).json({ error: "premium_required", message: "Subject-based mock tests require Premium." });
+    const item = await MockTest.findById(req.params["id"]);
+    if (!item || !item.isActive || item.testType !== "subject") return res.status(404).json({ error: "subject_mock_not_found", message: "Subject mock test not found." });
+    const chapterFilter: any = { subjectId: String(item.subjectId) };
+    if (item.chapterIds?.length) chapterFilter._id = { $in: item.chapterIds };
+    const chapters = await Chapter.find(chapterFilter).sort({ name: 1 }).lean();
+    const chapterIds = chapters.map((chapter: any) => String(chapter._id));
+    const topicFilter: any = { chapterId: { $in: chapterIds.flatMap(buildIdVariants) } };
+    if (item.topicIds?.length) topicFilter._id = { $in: item.topicIds };
+    const topics = await Topic.find(topicFilter).sort({ name: 1 }).lean();
+    res.json({ success: true, data: { chapters, topics } });
+  } catch (error) {
+    req.log.error({ error }, "Subject mock options failed");
+    res.status(500).json({ error: "subject_options_failed", message: "Failed to load chapters and topics." });
+  }
+});
+
 router.get("/:id", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   try {
     let item = await MockTest.findById(req.params["id"]);
@@ -441,6 +502,10 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       return;
     }
 
+    if (item.testType === "subject" && !user.isPremium) {
+      res.status(403).json({ error: "premium_required", message: "Subject-based mock tests require Premium." });
+      return;
+    }
     const completedByUser = await hasCompletedMockTest(userId, item.id);
     const access = buildAccessExtras(item, user, completedByUser);
     if (access.premiumLocked) {
@@ -471,7 +536,17 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       }
     }
 
-    const questions = await Question.find({ _id: { $in: item.questionIds } }).populate("questionTypeId");
+    let selectedChapterIds: string[] = [];
+    let selectedTopicIds: string[] = [];
+    let questions: any[];
+    if (item.testType === "subject") {
+      const selection = await buildSubjectQuestionSet(item, req.body);
+      questions = selection.questions;
+      selectedChapterIds = selection.selectedChapterIds;
+      selectedTopicIds = selection.selectedTopicIds;
+    } else {
+      questions = await Question.find({ _id: { $in: item.questionIds } }).populate("questionTypeId");
+    }
     if (!questions.length) {
       res.status(400).json({ error: "mock_test_empty", message: "This mock test has no available questions." });
       return;
@@ -484,8 +559,11 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
     }
 
     const questionMap = new Map(questions.map((question: any) => [String(question._id), question]));
-    const orderedQuestions = item.questionIds.map((id) => questionMap.get(String(id))).filter(Boolean);
+    const orderedQuestions = item.testType === "subject" ? questions : item.questionIds.map((id) => questionMap.get(String(id))).filter(Boolean);
     const sessionQuestions = orderedQuestions;
+    const sessionMaxScore = item.testType === "subject"
+      ? sessionQuestions.length * Number(item.marksPerQuestion || 4)
+      : Number(item.maxScore || 0);
 
     const sessionSubjectIds = [...new Set(sessionQuestions.map((question: any) => toIdString(question?.subjectId)).filter(Boolean))];
     const sessionChapterIds = [...new Set(sessionQuestions.map((question: any) => toIdString(question?.chapterId)).filter(Boolean))];
@@ -533,13 +611,15 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
         testType: item.testType ?? "full",
         examType: item.examType,
         subjectId: item.subjectId ?? null,
+        chapterIds: selectedChapterIds,
+        topicIds: selectedTopicIds,
         marksPerQuestion: item.marksPerQuestion,
         negativeMarks: item.negativeMarks,
         markingSchemeVersion: item.markingSchemeVersion,
         markingScheme: item.markingScheme ?? null,
-        questionMarkingRules: Array.isArray(item.questionMarkingRules) ? item.questionMarkingRules : [],
+        questionMarkingRules: item.testType === "subject" ? [] : Array.isArray(item.questionMarkingRules) ? item.questionMarkingRules : [],
         durationMinutes: item.durationMinutes,
-        maxScore: item.maxScore,
+        maxScore: sessionMaxScore,
         patternPreset: item.patternPreset,
         predictionTitle: item.predictionTitle,
         predictionDescription: item.predictionDescription,
@@ -579,7 +659,11 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
     });
   } catch (error) {
     req.log.error({ error }, "Mock test start failed");
-    res.status(500).json({ error: "mock_test_start_failed", message: "Failed to start mock test" });
+    const known = error as any;
+    res.status(Number(known?.statusCode || 500)).json({
+      error: known?.code || "mock_test_start_failed",
+      message: known?.statusCode ? known.message : "Failed to start mock test",
+    });
   }
 });
 

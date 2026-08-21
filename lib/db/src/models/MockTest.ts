@@ -26,6 +26,7 @@ export interface IMockTest extends Document {
   questionIds: string[];
   subjectIds: string[];
   chapterIds: string[];
+  topicIds: string[];
   instructions: string[];
   marksPerQuestion: number;
   negativeMarks: number;
@@ -85,6 +86,7 @@ const MockTestSchema = new Schema<IMockTest>(
     questionIds: { type: [String], default: [] },
     subjectIds: { type: [String], default: [] },
     chapterIds: { type: [String], default: [] },
+    topicIds: { type: [String], default: [] },
     instructions: { type: [String], default: [] },
     marksPerQuestion: { type: Number, default: 4 },
     negativeMarks: { type: Number, default: 1 },
