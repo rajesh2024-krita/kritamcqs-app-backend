@@ -28,6 +28,39 @@ function canAccessSubjectMocks(user: any, settings: any) {
   return user?.isPremium ? settings.premiumAccess !== false : settings.freeAccess === true;
 }
 
+async function getSubjectBuilderOptions(examType: string) {
+  const templates = await MockTest.find({ testType: "subject", examType, isActive: true, isGenerationTemplate: { $ne: true } })
+    .sort({ createdAt: -1 }).lean();
+  const subjectIds = [...new Set(templates.map((item: any) => String(item.subjectId)).filter(Boolean))];
+  const [subjects, allChapters] = await Promise.all([
+    Subject.find({ _id: { $in: subjectIds }, examType }).sort({ name: 1 }).lean(),
+    Chapter.find({ subjectId: { $in: subjectIds } }).sort({ name: 1 }).lean(),
+  ]);
+  const chapters = allChapters.filter((chapter: any) => templates.some((template: any) =>
+    String(template.subjectId) === String(chapter.subjectId)
+    && (!template.chapterIds?.length || template.chapterIds.map(String).includes(String(chapter._id)))
+  ));
+  const chapterIds = chapters.map((chapter: any) => String(chapter._id));
+  const allTopics = await Topic.find({ chapterId: { $in: chapterIds.flatMap(buildIdVariants) } }).sort({ name: 1 }).lean();
+  const chapterSubjectMap = new Map(chapters.map((chapter: any) => [String(chapter._id), String(chapter.subjectId)]));
+  const topics = allTopics.filter((topic: any) => templates.some((template: any) =>
+    String(template.subjectId) === chapterSubjectMap.get(String(topic.chapterId))
+    && (!template.topicIds?.length || template.topicIds.map(String).includes(String(topic._id)))
+  ));
+  return { templates, subjects, chapters, topics };
+}
+
+function subjectBuilderQuestionMatch(examType: string, subjectIds: string[], chapterIds: string[], topicIds: string[]) {
+  return {
+    examMode: examType,
+    subjectId: { $in: subjectIds.flatMap(buildIdVariants) },
+    chapterId: { $in: chapterIds.flatMap(buildIdVariants) },
+    topicId: { $in: topicIds.flatMap(buildIdVariants) },
+    isVisibleToUsers: { $ne: false },
+    questionStatus: { $ne: "incomplete" },
+  };
+}
+
 function getTodayWeekdayKey(date = new Date()) {
   return WEEKDAY_KEYS[date.getDay()] ?? "SUN";
 }
@@ -342,39 +375,37 @@ function requestedIds(value: unknown) {
 }
 
 async function buildSubjectQuestionSet(item: any, body: any, userId: string, settings: any) {
+  const selectedSubjectIds = requestedIds(body?.subjectIds);
   const selectedChapterIds = requestedIds(body?.chapterIds);
   const selectedTopicIds = requestedIds(body?.topicIds);
-  const allowedChapterIds = requestedIds(item.chapterIds);
-  const allowedTopicIds = requestedIds(item.topicIds);
+  const options = await getSubjectBuilderOptions(item.examType);
+  const allowedSubjectIds = new Set(options.subjects.map((subject: any) => String(subject._id)));
+  const allowedChapterIds = new Set(options.chapters.map((chapter: any) => String(chapter._id)));
+  const allowedTopicIds = new Set(options.topics.map((topic: any) => String(topic._id)));
 
-  if (!selectedChapterIds.length || !selectedTopicIds.length) {
-    throw Object.assign(new Error("Select at least one chapter and one topic."), { statusCode: 400, code: "subject_selection_required" });
+  if (!selectedSubjectIds.length || !selectedChapterIds.length || !selectedTopicIds.length) {
+    throw Object.assign(new Error("Select at least one subject, chapter, and topic."), { statusCode: 400, code: "subject_selection_required" });
   }
-  if (allowedChapterIds.length && selectedChapterIds.some((id) => !allowedChapterIds.includes(id))) {
+  if (selectedSubjectIds.some((id) => !allowedSubjectIds.has(id))) {
+    throw Object.assign(new Error("A selected subject is not enabled for this exam."), { statusCode: 400, code: "invalid_subject_selection" });
+  }
+  if (selectedChapterIds.some((id) => !allowedChapterIds.has(id))) {
     throw Object.assign(new Error("A selected chapter is not enabled for this mock test."), { statusCode: 400, code: "invalid_chapter_selection" });
   }
-  if (allowedTopicIds.length && selectedTopicIds.some((id) => !allowedTopicIds.includes(id))) {
+  if (selectedTopicIds.some((id) => !allowedTopicIds.has(id))) {
     throw Object.assign(new Error("A selected topic is not enabled for this mock test."), { statusCode: 400, code: "invalid_topic_selection" });
   }
 
-  if (selectedTopicIds.length) {
-    const selectedTopicDocs = await Topic.find({ _id: { $in: selectedTopicIds } }).select("_id subjectId chapterId").lean();
-    if (selectedTopicDocs.length !== selectedTopicIds.length || selectedTopicDocs.some((topic: any) => String(topic.subjectId) !== String(item.subjectId))) {
-      throw Object.assign(new Error("A selected topic does not belong to this subject."), { statusCode: 400, code: "invalid_topic_selection" });
-    }
-    if (selectedChapterIds.length && selectedTopicDocs.some((topic: any) => !selectedChapterIds.includes(String(topic.chapterId)))) {
-      throw Object.assign(new Error("Selected topics must belong to the selected chapters."), { statusCode: 400, code: "topic_chapter_mismatch" });
-    }
+  const selectedChapterDocs = options.chapters.filter((chapter: any) => selectedChapterIds.includes(String(chapter._id)));
+  if (selectedChapterDocs.some((chapter: any) => !selectedSubjectIds.includes(String(chapter.subjectId)))) {
+    throw Object.assign(new Error("Selected chapters must belong to the selected subjects."), { statusCode: 400, code: "chapter_subject_mismatch" });
+  }
+  const selectedTopicDocs = options.topics.filter((topic: any) => selectedTopicIds.includes(String(topic._id)));
+  if (selectedTopicDocs.some((topic: any) => !selectedChapterIds.includes(String(topic.chapterId)))) {
+    throw Object.assign(new Error("Selected topics must belong to the selected chapters."), { statusCode: 400, code: "topic_chapter_mismatch" });
   }
 
-  const match: Record<string, unknown> = {
-    subjectId: item.subjectId,
-    examMode: item.examType,
-    isVisibleToUsers: { $ne: false },
-    questionStatus: { $ne: "incomplete" },
-  };
-  if (selectedTopicIds.length) match.topicId = { $in: selectedTopicIds.flatMap(buildIdVariants) };
-  if (selectedChapterIds.length) match.chapterId = { $in: selectedChapterIds.flatMap(buildIdVariants) };
+  const match = subjectBuilderQuestionMatch(item.examType, selectedSubjectIds, selectedChapterIds, selectedTopicIds);
   const targetCount = Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || item.totalQuestions || 10)));
   const questions = await Question.find(match).populate("questionTypeId").limit(Math.max(targetCount * 10, 500));
   const historyCollection = mongoose.connection.collection("subjectmockquestionhistories");
@@ -385,10 +416,10 @@ async function buildSubjectQuestionSet(item: any, body: any, userId: string, set
   const unseen = shuffleList(questions.filter((question: any) => !seenIds.has(String(question._id))));
   const reused = settings.allowQuestionReuse === false ? [] : shuffleList(questions.filter((question: any) => seenIds.has(String(question._id))));
   const selected = [...unseen, ...reused].slice(0, targetCount);
-  if (!selected.length) {
-    throw Object.assign(new Error("No questions are available for the selected chapters and topics."), { statusCode: 400, code: "no_matching_questions" });
+  if (selected.length < targetCount) {
+    throw Object.assign(new Error(`Only ${selected.length} questions are available; ${targetCount} are required.`), { statusCode: 400, code: "insufficient_questions" });
   }
-  return { questions: selected, selectedChapterIds, selectedTopicIds, seenIds };
+  return { questions: selected, selectedSubjectIds, selectedChapterIds, selectedTopicIds, seenIds };
 }
 
 router.get("/", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
@@ -499,6 +530,56 @@ router.get("/performance/subject", requireAuth, requireOnboardingComplete, async
   }
 });
 
+router.get("/subject-builder/options", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
+  try {
+    const settings = await getSubjectMockSettings();
+    if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
+    const examType = String(req.query["examType"] || "").toUpperCase();
+    if (!["NEET", "JEE"].includes(examType)) return res.status(400).json({ error: "invalid_exam_type", message: "Select NEET or JEE." });
+    const options = await getSubjectBuilderOptions(examType);
+    const templateBySubject = Object.fromEntries(options.templates.map((template: any) => [String(template.subjectId), String(template._id)]));
+    res.json({ success: true, data: {
+      subjects: options.subjects,
+      chapters: options.chapters,
+      topics: options.topics,
+      templateBySubject,
+      requiredQuestionCount: Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || 10))),
+    } });
+  } catch (error) {
+    req.log.error({ error }, "Subject builder options failed");
+    res.status(500).json({ error: "subject_builder_options_failed", message: "Failed to load subject mock test options." });
+  }
+});
+
+router.post("/subject-builder/availability", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
+  try {
+    const settings = await getSubjectMockSettings();
+    if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
+    const examType = String(req.body?.examType || "").toUpperCase();
+    const subjectIds = requestedIds(req.body?.subjectIds);
+    const chapterIds = requestedIds(req.body?.chapterIds);
+    const topicIds = requestedIds(req.body?.topicIds);
+    if (!["NEET", "JEE"].includes(examType)) return res.status(400).json({ error: "invalid_exam_type", message: "Select NEET or JEE." });
+    if (!subjectIds.length || !chapterIds.length || !topicIds.length) return res.json({ success: true, data: { availableQuestionCount: 0, requiredQuestionCount: Number(settings.defaultQuestionCount || 10), canGenerate: false } });
+
+    const options = await getSubjectBuilderOptions(examType);
+    const validSubjects = new Set(options.subjects.map((entry: any) => String(entry._id)));
+    const chapterMap = new Map(options.chapters.map((entry: any) => [String(entry._id), entry]));
+    const topicMap = new Map(options.topics.map((entry: any) => [String(entry._id), entry]));
+    const invalid = subjectIds.some((id) => !validSubjects.has(id))
+      || chapterIds.some((id) => !chapterMap.has(id) || !subjectIds.includes(String((chapterMap.get(id) as any).subjectId)))
+      || topicIds.some((id) => !topicMap.has(id) || !chapterIds.includes(String((topicMap.get(id) as any).chapterId)));
+    if (invalid) return res.status(400).json({ error: "invalid_subject_selection", message: "The selected subjects, chapters, and topics do not match." });
+
+    const requiredQuestionCount = Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || 10)));
+    const availableQuestionCount = await Question.countDocuments(subjectBuilderQuestionMatch(examType, subjectIds, chapterIds, topicIds));
+    res.json({ success: true, data: { availableQuestionCount, requiredQuestionCount, canGenerate: availableQuestionCount >= requiredQuestionCount } });
+  } catch (error) {
+    req.log.error({ error }, "Subject builder availability failed");
+    res.status(500).json({ error: "subject_availability_failed", message: "Failed to calculate available questions." });
+  }
+});
+
 router.get("/:id/subject-options", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   try {
     const settings = await getSubjectMockSettings();
@@ -573,7 +654,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
     }
 
     if (item.testType === "subject") {
-      if (!["NEET", "JEE"].includes(item.examType) || !item.subjectId) {
+      if (!["NEET", "JEE"].includes(item.examType)) {
         res.status(400).json({ error: "invalid_subject_test", message: "This subject mock test is not configured correctly." });
         return;
       }
@@ -587,6 +668,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       }
     }
 
+    let selectedSubjectIds: string[] = [];
     let selectedChapterIds: string[] = [];
     let selectedTopicIds: string[] = [];
     let selectedSeenIds = new Set<string>();
@@ -594,6 +676,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
     if (item.testType === "subject") {
       const selection = await buildSubjectQuestionSet(item, req.body, userId, subjectSettings);
       questions = selection.questions;
+      selectedSubjectIds = selection.selectedSubjectIds;
       selectedChapterIds = selection.selectedChapterIds;
       selectedTopicIds = selection.selectedTopicIds;
       selectedSeenIds = selection.seenIds;
@@ -605,7 +688,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       return;
     }
     if (item.testType === "subject" && questions.some((question: any) =>
-      String(question.subjectId) !== String(item.subjectId) || String(question.examMode).toUpperCase() !== item.examType
+      !selectedSubjectIds.includes(String(question.subjectId)) || String(question.examMode).toUpperCase() !== item.examType
     )) {
       res.status(400).json({ error: "invalid_subject_questions", message: "One or more questions do not belong to this exam mode and subject." });
       return;
@@ -663,8 +746,10 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
         mockTestId: item.id,
         testType: item.testType ?? "full",
         examType: item.examType,
-        subjectId: item.subjectId ?? null,
-        subjectName: item.subject ?? "",
+        subjectId: selectedSubjectIds[0] ?? item.subjectId ?? null,
+        subjectIds: selectedSubjectIds,
+        subjectName: selectedSubjectIds.map((id) => subjectNameMap.get(id)).filter(Boolean).join(", ") || item.subject || "",
+        subjectNames: selectedSubjectIds.map((id) => subjectNameMap.get(id)).filter(Boolean),
         chapterIds: selectedChapterIds,
         topicIds: selectedTopicIds,
         chapterNames: selectedChapterIds.map((id) => chapterNameMap.get(id)).filter(Boolean),
@@ -684,6 +769,23 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       sourceSessionId: item.id,
       title: item.title,
     });
+
+    if (item.testType === "subject") {
+      const historyCollection = mongoose.connection.collection("subjectmockquestionhistories");
+      const generatedAt = new Date();
+      await historyCollection.insertMany(sessionQuestions.map((question: any) => ({
+        userId,
+        examType: item.examType,
+        subjectId: toIdString(question.subjectId),
+        chapterId: toIdString(question.chapterId),
+        topicId: toIdString(question.topicId),
+        questionId: String(question._id),
+        mockTestId: String(item.id),
+        sessionId: String(session.id),
+        generatedAt,
+        previouslyShown: selectedSeenIds.has(String(question._id)),
+      })));
+    }
 
     res.json({
       success: true,
@@ -721,22 +823,6 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       message: known?.statusCode ? known.message : "Failed to start mock test",
     });
 
-    if (item.testType === "subject") {
-      const historyCollection = mongoose.connection.collection("subjectmockquestionhistories");
-      const generatedAt = new Date();
-      await historyCollection.insertMany(sessionQuestions.map((question: any) => ({
-        userId,
-        examType: item.examType,
-        subjectId: String(item.subjectId),
-        chapterId: toIdString(question.chapterId),
-        topicId: toIdString(question.topicId),
-        questionId: String(question._id),
-        mockTestId: String(item.id),
-        sessionId: String(session.id),
-        generatedAt,
-        previouslyShown: selectedSeenIds.has(String(question._id)),
-      })));
-    }
   }
 });
 
