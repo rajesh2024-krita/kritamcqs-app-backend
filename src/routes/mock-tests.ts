@@ -331,8 +331,8 @@ async function buildSubjectQuestionSet(item: any, body: any) {
   const allowedChapterIds = requestedIds(item.chapterIds);
   const allowedTopicIds = requestedIds(item.topicIds);
 
-  if (!selectedChapterIds.length && !selectedTopicIds.length) {
-    throw Object.assign(new Error("Select at least one chapter or topic."), { statusCode: 400, code: "subject_selection_required" });
+  if (!selectedChapterIds.length || !selectedTopicIds.length) {
+    throw Object.assign(new Error("Select at least one chapter and one topic."), { statusCode: 400, code: "subject_selection_required" });
   }
   if (allowedChapterIds.length && selectedChapterIds.some((id) => !allowedChapterIds.includes(id))) {
     throw Object.assign(new Error("A selected chapter is not enabled for this mock test."), { statusCode: 400, code: "invalid_chapter_selection" });
@@ -341,7 +341,22 @@ async function buildSubjectQuestionSet(item: any, body: any) {
     throw Object.assign(new Error("A selected topic is not enabled for this mock test."), { statusCode: 400, code: "invalid_topic_selection" });
   }
 
-  const match: Record<string, unknown> = { subjectId: item.subjectId, examMode: item.examType };
+  if (selectedTopicIds.length) {
+    const selectedTopicDocs = await Topic.find({ _id: { $in: selectedTopicIds } }).select("_id subjectId chapterId").lean();
+    if (selectedTopicDocs.length !== selectedTopicIds.length || selectedTopicDocs.some((topic: any) => String(topic.subjectId) !== String(item.subjectId))) {
+      throw Object.assign(new Error("A selected topic does not belong to this subject."), { statusCode: 400, code: "invalid_topic_selection" });
+    }
+    if (selectedChapterIds.length && selectedTopicDocs.some((topic: any) => !selectedChapterIds.includes(String(topic.chapterId)))) {
+      throw Object.assign(new Error("Selected topics must belong to the selected chapters."), { statusCode: 400, code: "topic_chapter_mismatch" });
+    }
+  }
+
+  const match: Record<string, unknown> = {
+    subjectId: item.subjectId,
+    examMode: item.examType,
+    isVisibleToUsers: { $ne: false },
+    questionStatus: { $ne: "incomplete" },
+  };
   if (selectedTopicIds.length) match.topicId = { $in: selectedTopicIds.flatMap(buildIdVariants) };
   if (selectedChapterIds.length) match.chapterId = { $in: selectedChapterIds.flatMap(buildIdVariants) };
   const targetCount = Math.max(1, Number(item.totalQuestions || 1));
