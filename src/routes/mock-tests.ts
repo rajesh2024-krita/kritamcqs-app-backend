@@ -34,11 +34,10 @@ async function getSubjectBuilderOptions(examType: string) {
   // source configuration for the on-demand subject builder.
   const templates = await MockTest.find({ testType: "subject", examType, isActive: true })
     .sort({ isGenerationTemplate: -1, createdAt: -1 }).lean();
-  const subjectIds = [...new Set(templates.map((item: any) => String(item.subjectId)).filter(Boolean))];
-  const [subjects, allChapters] = await Promise.all([
-    Subject.find({ _id: { $in: subjectIds }, $or: [{ examType }, { examMode: examType }] }).sort({ name: 1 }).lean(),
-    Chapter.find({ subjectId: { $in: subjectIds } }).sort({ name: 1 }).lean(),
-  ]);
+  const examMatcher = new RegExp(`^${examType}$`, "i");
+  const subjects = await Subject.find({ $or: [{ examType: examMatcher }, { examMode: examMatcher }] }).sort({ name: 1 }).lean();
+  const subjectIds = subjects.map((item: any) => String(item._id));
+  const allChapters = await Chapter.find({ subjectId: { $in: subjectIds } }).sort({ name: 1 }).lean();
   const chapters = allChapters;
   const chapterIds = chapters.map((chapter: any) => String(chapter._id));
   const allTopics = await Topic.find({ chapterId: { $in: chapterIds.flatMap(buildIdVariants) } }).sort({ name: 1 }).lean();
@@ -577,6 +576,54 @@ router.post("/subject-builder/availability", requireAuth, requireOnboardingCompl
   } catch (error) {
     req.log.error({ error }, "Subject builder availability failed");
     res.status(500).json({ error: "subject_availability_failed", message: "Failed to calculate available questions." });
+  }
+});
+
+router.post("/subject-builder/prepare", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
+  try {
+    const settings = await getSubjectMockSettings();
+    if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
+    const examType = String(req.body?.examType || "").toUpperCase();
+    const subjectId = toIdString(req.body?.subjectId);
+    if (!["NEET", "JEE"].includes(examType) || !subjectId) return res.status(400).json({ error: "invalid_subject_selection", message: "Select a valid exam type and subject." });
+    const examMatcher = new RegExp(`^${examType}$`, "i");
+    const subject = await Subject.findOne({ _id: subjectId, $or: [{ examType: examMatcher }, { examMode: examMatcher }] }).select("_id name").lean();
+    if (!subject) return res.status(400).json({ error: "invalid_subject_selection", message: "The selected subject does not belong to this exam type." });
+
+    let template = await MockTest.findOne({ testType: "subject", examType, subjectId, isActive: true }).sort({ isGenerationTemplate: -1, createdAt: -1 });
+    if (!template) {
+      const questionCount = Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || 10)));
+      template = await MockTest.create({
+        title: `${examType} ${String((subject as any).name)} Subject Mock Test`,
+        slug: `subject-builder-${examType.toLowerCase()}-${subjectId}-${Date.now()}`,
+        description: "On-demand subject-based mock test",
+        examType,
+        testType: "subject",
+        subjectId,
+        subject: String((subject as any).name),
+        generationMode: "automatic",
+        generationFrequency: "daily",
+        isGenerationTemplate: true,
+        patternPreset: "CUSTOM",
+        durationMinutes: Math.max(10, questionCount),
+        totalQuestions: questionCount,
+        maxScore: questionCount * 4,
+        marksPerQuestion: 4,
+        negativeMarks: 1,
+        questionIds: [],
+        subjectIds: [subjectId],
+        chapterIds: [],
+        topicIds: [],
+        instructions: ["Answer all questions within the configured time."],
+        isPremiumOnly: true,
+        isActive: true,
+        availabilityMode: "all",
+      });
+    }
+    res.json({ success: true, data: { templateId: String(template._id) } });
+  } catch (error) {
+    req.log.error({ error }, "Subject builder preparation failed");
+    res.status(500).json({ error: "subject_builder_prepare_failed", message: "Failed to prepare the subject mock test." });
   }
 });
 
