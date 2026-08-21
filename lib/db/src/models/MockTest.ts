@@ -42,6 +42,7 @@ export interface IMockTest extends Document {
   totalAttemptQuestions?: number;
   sectionGroups: Array<Record<string, unknown>>;
   generationSource: "manual" | "auto";
+  generationScheduleType?: "daily" | "weekly" | "monthly" | "manual" | "";
   generationConfig?: Record<string, unknown>;
   generationHistory: Array<Record<string, unknown>>;
   selectionMix?: Record<string, unknown>;
@@ -102,6 +103,7 @@ const MockTestSchema = new Schema<IMockTest>(
     totalAttemptQuestions: { type: Number, min: 1 },
     sectionGroups: { type: [Schema.Types.Mixed], default: [] },
     generationSource: { type: String, enum: ["manual", "auto"], default: "manual", index: true },
+    generationScheduleType: { type: String, enum: ["daily", "weekly", "monthly", "manual", ""], default: "", index: true },
     generationConfig: { type: Schema.Types.Mixed },
     generationHistory: { type: [Schema.Types.Mixed], default: [] },
     selectionMix: { type: Schema.Types.Mixed },

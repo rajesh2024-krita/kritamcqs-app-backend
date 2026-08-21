@@ -113,6 +113,7 @@ function normalizeMockTest(mockTest: any, extras: Record<string, unknown> = {}) 
     totalAttemptQuestions: Number(raw.totalAttemptQuestions ?? raw.totalQuestions ?? raw.questionIds?.length ?? 0),
     sectionGroups: Array.isArray(raw.sectionGroups) ? raw.sectionGroups : [],
     generationSource: raw.generationSource ?? "manual",
+    generationScheduleType: raw.generationScheduleType ?? "",
     generationConfig: raw.generationConfig ?? null,
     generationHistory: Array.isArray(raw.generationHistory) ? raw.generationHistory : [],
     randomizeQuestionOrder: raw.randomizeQuestionOrder !== false,
@@ -169,6 +170,9 @@ function getDateKey(date = new Date()) {
 
 async function refreshPremiumMockQuestionsIfNeeded(mockTest: any) {
   if (!mockTest?.isPremiumOnly) return mockTest;
+  // Weekly/monthly scheduler output is a published paper, not a daily template.
+  // This also protects older weekly records that were saved with the daily flag.
+  if (["weekly", "monthly"].includes(String(mockTest.generationScheduleType || "").toLowerCase())) return mockTest;
   if (!mockTest.autoDailyQuestionGeneration && !mockTest.autoDailyQuestionRearrangement) return mockTest;
 
   const todayKey = getDateKey();
