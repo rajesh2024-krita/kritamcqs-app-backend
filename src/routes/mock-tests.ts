@@ -11,6 +11,22 @@ import { shuffleQuestionOptionsForDelivery } from "../lib/question-randomization
 
 const router: IRouter = Router();
 const WEEKDAY_KEYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+const SUBJECT_MOCK_SETTINGS_DEFAULTS = {
+  key: "default", enabled: true, premiumAccess: true, freeAccess: false,
+  defaultQuestionCount: 10, maximumQuestionCount: 50,
+  prioritizeUnseenQuestions: true, allowQuestionReuse: true,
+};
+
+async function getSubjectMockSettings() {
+  const raw = await mongoose.connection.collection("subjectmocktestsettings").findOne({ key: "default" });
+  return { ...SUBJECT_MOCK_SETTINGS_DEFAULTS, ...(raw || {}) };
+}
+
+function canAccessSubjectMocks(user: any, settings: any) {
+  if (!settings.enabled) return false;
+  if (typeof user?.subjectMockTestAccess === "boolean") return user.subjectMockTestAccess;
+  return user?.isPremium ? settings.premiumAccess !== false : settings.freeAccess === true;
+}
 
 function getTodayWeekdayKey(date = new Date()) {
   return WEEKDAY_KEYS[date.getDay()] ?? "SUN";
@@ -299,14 +315,14 @@ async function selectPrioritizedMockQuestions({
   return selected.slice(0, targetCount);
 }
 
-function buildAccessExtras(mockTest: any, user: any, completedByUser: boolean) {
+function buildAccessExtras(mockTest: any, user: any, completedByUser: boolean, subjectAccess = Boolean(user?.isPremium)) {
   if (mockTest.testType === "subject") {
     return {
       completedByUser,
       oneTimeFreeUsed: false,
       isPremiumForUser: true,
       accessType: "premium",
-      premiumLocked: !user?.isPremium,
+      premiumLocked: !subjectAccess,
     };
   }
   const oneTimeFreeUsed = Boolean(mockTest.testType === "subject" && mockTest.isOneTimeFree && completedByUser);
@@ -325,7 +341,7 @@ function requestedIds(value: unknown) {
   return [...new Set((Array.isArray(value) ? value : []).map(toIdString).filter(Boolean))];
 }
 
-async function buildSubjectQuestionSet(item: any, body: any) {
+async function buildSubjectQuestionSet(item: any, body: any, userId: string, settings: any) {
   const selectedChapterIds = requestedIds(body?.chapterIds);
   const selectedTopicIds = requestedIds(body?.topicIds);
   const allowedChapterIds = requestedIds(item.chapterIds);
@@ -359,19 +375,28 @@ async function buildSubjectQuestionSet(item: any, body: any) {
   };
   if (selectedTopicIds.length) match.topicId = { $in: selectedTopicIds.flatMap(buildIdVariants) };
   if (selectedChapterIds.length) match.chapterId = { $in: selectedChapterIds.flatMap(buildIdVariants) };
-  const targetCount = Math.max(1, Number(item.totalQuestions || 1));
+  const targetCount = Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || item.totalQuestions || 10)));
   const questions = await Question.find(match).populate("questionTypeId").limit(Math.max(targetCount * 10, 500));
-  const selected = shuffleList(questions).slice(0, targetCount);
+  const historyCollection = mongoose.connection.collection("subjectmockquestionhistories");
+  const previouslyServed = settings.prioritizeUnseenQuestions === false ? [] : await historyCollection
+    .find({ userId, questionId: { $in: questions.map((question: any) => String(question._id)) } })
+    .project({ questionId: 1 }).toArray();
+  const seenIds = new Set(previouslyServed.map((entry: any) => String(entry.questionId)));
+  const unseen = shuffleList(questions.filter((question: any) => !seenIds.has(String(question._id))));
+  const reused = settings.allowQuestionReuse === false ? [] : shuffleList(questions.filter((question: any) => seenIds.has(String(question._id))));
+  const selected = [...unseen, ...reused].slice(0, targetCount);
   if (!selected.length) {
     throw Object.assign(new Error("No questions are available for the selected chapters and topics."), { statusCode: 400, code: "no_matching_questions" });
   }
-  return { questions: selected, selectedChapterIds, selectedTopicIds };
+  return { questions: selected, selectedChapterIds, selectedTopicIds, seenIds };
 }
 
 router.get("/", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   try {
     const user = req.user!;
     const userId = req.userId!;
+    const subjectSettings = await getSubjectMockSettings();
+    const subjectAccess = canAccessSubjectMocks(user, subjectSettings);
     const requestedExamType = String(req.query["examType"] ?? user.examMode ?? "NEET").toUpperCase();
     const search = String(req.query["search"] ?? "").trim();
     const requestedTestType = String(req.query["testType"] ?? "").toLowerCase();
@@ -415,7 +440,11 @@ router.get("/", requireAuth, requireOnboardingComplete, async (req: Authenticate
       success: true,
       data: visibleItems.map((item) =>
         normalizeMockTest(item, {
-          ...buildAccessExtras(item, user, completedMockTestIds.has(String(item.id))),
+          ...buildAccessExtras(item, user, completedMockTestIds.has(String(item.id)), subjectAccess),
+          ...(item.testType === "subject" ? {
+            totalQuestions: Math.max(1, Math.min(Number(subjectSettings.maximumQuestionCount || 50), Number(subjectSettings.defaultQuestionCount || 10))),
+            maxScore: Math.max(1, Math.min(Number(subjectSettings.maximumQuestionCount || 50), Number(subjectSettings.defaultQuestionCount || 10))) * Number(item.marksPerQuestion || 4),
+          } : {}),
           attemptCount: attemptCountMap.get(String(item.id)) ?? 0,
           nextAttemptNumber: (attemptCountMap.get(String(item.id)) ?? 0) + 1,
           subjectNames: (item.subjectIds ?? []).map((id) => subjectMap.get(String(id))).filter(Boolean),
@@ -472,7 +501,8 @@ router.get("/performance/subject", requireAuth, requireOnboardingComplete, async
 
 router.get("/:id/subject-options", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   try {
-    if (!req.user?.isPremium) return res.status(403).json({ error: "premium_required", message: "Subject-based mock tests require Premium." });
+    const settings = await getSubjectMockSettings();
+    if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
     const item = await MockTest.findById(req.params["id"]);
     if (!item || !item.isActive || item.testType !== "subject") return res.status(404).json({ error: "subject_mock_not_found", message: "Subject mock test not found." });
     const chapterFilter: any = { subjectId: String(item.subjectId) };
@@ -521,12 +551,14 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       return;
     }
 
-    if (item.testType === "subject" && !user.isPremium) {
-      res.status(403).json({ error: "premium_required", message: "Subject-based mock tests require Premium." });
+    const subjectSettings = await getSubjectMockSettings();
+    const subjectAccess = canAccessSubjectMocks(user, subjectSettings);
+    if (item.testType === "subject" && !subjectAccess) {
+      res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
       return;
     }
     const completedByUser = await hasCompletedMockTest(userId, item.id);
-    const access = buildAccessExtras(item, user, completedByUser);
+    const access = buildAccessExtras(item, user, completedByUser, subjectAccess);
     if (access.premiumLocked) {
       res.status(403).json({ error: "premium_required", message: "This mock test is available for premium learners." });
       return;
@@ -557,12 +589,14 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
 
     let selectedChapterIds: string[] = [];
     let selectedTopicIds: string[] = [];
+    let selectedSeenIds = new Set<string>();
     let questions: any[];
     if (item.testType === "subject") {
-      const selection = await buildSubjectQuestionSet(item, req.body);
+      const selection = await buildSubjectQuestionSet(item, req.body, userId, subjectSettings);
       questions = selection.questions;
       selectedChapterIds = selection.selectedChapterIds;
       selectedTopicIds = selection.selectedTopicIds;
+      selectedSeenIds = selection.seenIds;
     } else {
       questions = await Question.find({ _id: { $in: item.questionIds } }).populate("questionTypeId");
     }
@@ -630,8 +664,11 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
         testType: item.testType ?? "full",
         examType: item.examType,
         subjectId: item.subjectId ?? null,
+        subjectName: item.subject ?? "",
         chapterIds: selectedChapterIds,
         topicIds: selectedTopicIds,
+        chapterNames: selectedChapterIds.map((id) => chapterNameMap.get(id)).filter(Boolean),
+        topicNames: selectedTopicIds.map((id) => topicNameMap.get(id)).filter(Boolean),
         marksPerQuestion: item.marksPerQuestion,
         negativeMarks: item.negativeMarks,
         markingSchemeVersion: item.markingSchemeVersion,
@@ -683,6 +720,23 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       error: known?.code || "mock_test_start_failed",
       message: known?.statusCode ? known.message : "Failed to start mock test",
     });
+
+    if (item.testType === "subject") {
+      const historyCollection = mongoose.connection.collection("subjectmockquestionhistories");
+      const generatedAt = new Date();
+      await historyCollection.insertMany(sessionQuestions.map((question: any) => ({
+        userId,
+        examType: item.examType,
+        subjectId: String(item.subjectId),
+        chapterId: toIdString(question.chapterId),
+        topicId: toIdString(question.topicId),
+        questionId: String(question._id),
+        mockTestId: String(item.id),
+        sessionId: String(session.id),
+        generatedAt,
+        previouslyShown: selectedSeenIds.has(String(question._id)),
+      })));
+    }
   }
 });
 

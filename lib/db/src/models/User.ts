@@ -34,6 +34,7 @@ export interface IUser extends Document {
   isBlocked?: boolean;
   lastLoginAt?: Date;
   isPremium: boolean;
+  subjectMockTestAccess?: boolean | null;
   premiumExpiresAt?: Date;
   premiumPlan?: string;
   premiumExpiry?: Date;
@@ -96,6 +97,7 @@ const UserSchema = new Schema<IUser>(
     isBlocked: { type: Boolean, default: false },
     lastLoginAt: Date,
     isPremium: { type: Boolean, default: false },
+    subjectMockTestAccess: { type: Boolean, default: null, index: true },
     premiumExpiresAt: Date,
     premiumPlan: String,
     premiumExpiry: Date,
