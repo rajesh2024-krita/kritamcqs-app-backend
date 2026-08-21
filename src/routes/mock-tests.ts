@@ -29,24 +29,20 @@ function canAccessSubjectMocks(user: any, settings: any) {
 }
 
 async function getSubjectBuilderOptions(examType: string) {
-  const templates = await MockTest.find({ testType: "subject", examType, isActive: true, isGenerationTemplate: { $ne: true } })
-    .sort({ createdAt: -1 }).lean();
+  // Automatic subject configurations are stored as generation templates by Admin.
+  // They must remain hidden from the normal mock-test listing, but they are the
+  // source configuration for the on-demand subject builder.
+  const templates = await MockTest.find({ testType: "subject", examType, isActive: true })
+    .sort({ isGenerationTemplate: -1, createdAt: -1 }).lean();
   const subjectIds = [...new Set(templates.map((item: any) => String(item.subjectId)).filter(Boolean))];
   const [subjects, allChapters] = await Promise.all([
-    Subject.find({ _id: { $in: subjectIds }, examType }).sort({ name: 1 }).lean(),
+    Subject.find({ _id: { $in: subjectIds }, $or: [{ examType }, { examMode: examType }] }).sort({ name: 1 }).lean(),
     Chapter.find({ subjectId: { $in: subjectIds } }).sort({ name: 1 }).lean(),
   ]);
-  const chapters = allChapters.filter((chapter: any) => templates.some((template: any) =>
-    String(template.subjectId) === String(chapter.subjectId)
-    && (!template.chapterIds?.length || template.chapterIds.map(String).includes(String(chapter._id)))
-  ));
+  const chapters = allChapters;
   const chapterIds = chapters.map((chapter: any) => String(chapter._id));
   const allTopics = await Topic.find({ chapterId: { $in: chapterIds.flatMap(buildIdVariants) } }).sort({ name: 1 }).lean();
-  const chapterSubjectMap = new Map(chapters.map((chapter: any) => [String(chapter._id), String(chapter.subjectId)]));
-  const topics = allTopics.filter((topic: any) => templates.some((template: any) =>
-    String(template.subjectId) === chapterSubjectMap.get(String(topic.chapterId))
-    && (!template.topicIds?.length || template.topicIds.map(String).includes(String(topic._id)))
-  ));
+  const topics = allTopics;
   return { templates, subjects, chapters, topics };
 }
 
@@ -537,7 +533,11 @@ router.get("/subject-builder/options", requireAuth, requireOnboardingComplete, a
     const examType = String(req.query["examType"] || "").toUpperCase();
     if (!["NEET", "JEE"].includes(examType)) return res.status(400).json({ error: "invalid_exam_type", message: "Select NEET or JEE." });
     const options = await getSubjectBuilderOptions(examType);
-    const templateBySubject = Object.fromEntries(options.templates.map((template: any) => [String(template.subjectId), String(template._id)]));
+    const templateBySubject = options.templates.reduce((result: Record<string, string>, template: any) => {
+      const subjectId = String(template.subjectId);
+      if (!result[subjectId]) result[subjectId] = String(template._id);
+      return result;
+    }, {});
     res.json({ success: true, data: {
       subjects: options.subjects,
       chapters: options.chapters,
@@ -627,7 +627,16 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
     const user = req.user!;
     const userId = req.userId!;
     let item = await MockTest.findById(req.params["id"]);
-    if (!item || !item.isActive || item.isGenerationTemplate) {
+    const isSubjectBuilderRequest = Boolean(
+      item?.testType === "subject"
+      && Array.isArray(req.body?.subjectIds)
+      && req.body.subjectIds.length
+      && Array.isArray(req.body?.chapterIds)
+      && req.body.chapterIds.length
+      && Array.isArray(req.body?.topicIds)
+      && req.body.topicIds.length
+    );
+    if (!item || !item.isActive || (item.isGenerationTemplate && !isSubjectBuilderRequest)) {
       res.status(404).json({ error: "mock_test_not_found", message: "Mock test not found" });
       return;
     }
