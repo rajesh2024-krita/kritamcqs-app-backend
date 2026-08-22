@@ -93,6 +93,22 @@ function subjectBuilderQuestionMatch(examType: string, _subjectIds: string[], ch
   };
 }
 
+async function countSubjectBuilderQuestions(examType: string, subjectIds: string[], chapterIds: string[], topicIds: string[]) {
+  return mongoose.connection.collection("questions").countDocuments(
+    subjectBuilderQuestionMatch(examType, subjectIds, chapterIds, topicIds),
+  );
+}
+
+async function loadSubjectBuilderQuestions(examType: string, subjectIds: string[], chapterIds: string[], topicIds: string[], limit: number) {
+  const rows = await mongoose.connection.collection("questions")
+    .find(subjectBuilderQuestionMatch(examType, subjectIds, chapterIds, topicIds))
+    .project({ _id: 1 })
+    .limit(limit)
+    .toArray();
+  if (!rows.length) return [];
+  return Question.find({ _id: { $in: rows.map((row) => row._id) } }).populate("questionTypeId");
+}
+
 function getTodayWeekdayKey(date = new Date()) {
   return WEEKDAY_KEYS[date.getDay()] ?? "SUN";
 }
@@ -454,9 +470,14 @@ async function buildSubjectQuestionSet(item: any, body: any, userId: string, set
     throw Object.assign(new Error("Selected topics must belong to the selected chapters."), { statusCode: 400, code: "topic_chapter_mismatch" });
   }
 
-  const match = subjectBuilderQuestionMatch(item.examType, selectedSubjectIds, selectedChapterIds, selectedTopicIds);
   const targetCount = Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || item.totalQuestions || 10)));
-  const questions = await Question.find(match).populate("questionTypeId").limit(Math.max(targetCount * 10, 500));
+  const questions = await loadSubjectBuilderQuestions(
+    item.examType,
+    selectedSubjectIds,
+    selectedChapterIds,
+    selectedTopicIds,
+    Math.max(targetCount * 10, 500),
+  );
   const historyCollection = mongoose.connection.collection("subjectmockquestionhistories");
   const previouslyServed = settings.prioritizeUnseenQuestions === false ? [] : await historyCollection
     .find({ userId, questionId: { $in: questions.map((question: any) => String(question._id)) } })
@@ -625,7 +646,7 @@ router.post("/subject-builder/availability", requireAuth, requireOnboardingCompl
     if (invalid) return res.status(400).json({ error: "invalid_subject_selection", message: "The selected subjects, chapters, and topics do not match." });
 
     const requiredQuestionCount = Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || 10)));
-    const availableQuestionCount = await Question.countDocuments(subjectBuilderQuestionMatch(examType, subjectIds, chapterIds, topicIds));
+    const availableQuestionCount = await countSubjectBuilderQuestions(examType, subjectIds, chapterIds, topicIds);
     res.json({ success: true, data: { availableQuestionCount, requiredQuestionCount, canGenerate: availableQuestionCount >= requiredQuestionCount } });
   } catch (error) {
     req.log.error({ error }, "Subject builder availability failed");
