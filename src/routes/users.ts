@@ -847,6 +847,7 @@ router.get("/stats", requireAuth, requireOnboardingComplete, async (req: Authent
         title: session?.title ?? "Mock Test",
         testType: String((session?.filterSnapshot as any)?.testType ?? "full"),
         subjectId: (session?.filterSnapshot as any)?.subjectId ?? null,
+        subjectIds: (session?.filterSnapshot as any)?.subjectIds ?? [(session?.filterSnapshot as any)?.subjectId].filter(Boolean),
         subjectName: (session?.filterSnapshot as any)?.subjectName ?? "",
         subjectNames: (session?.filterSnapshot as any)?.subjectNames ?? [],
         chapterIds: (session?.filterSnapshot as any)?.chapterIds ?? [],
