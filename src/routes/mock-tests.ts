@@ -389,6 +389,15 @@ function requestedIds(value: unknown) {
   return [...new Set((Array.isArray(value) ? value : []).map(toIdString).filter(Boolean))];
 }
 
+function normalizeSubjectExamType(value: unknown, fallback: unknown = "") {
+  const normalize = (candidate: unknown) => String(Array.isArray(candidate) ? candidate[0] : candidate || "")
+    .trim().toUpperCase().replace(/[^A-Z]/g, "");
+  const requested = normalize(value);
+  if (requested === "NEET" || requested === "JEE") return requested;
+  const fallbackMode = normalize(fallback);
+  return fallbackMode === "NEET" || fallbackMode === "JEE" ? fallbackMode : "";
+}
+
 function buildSubjectTestKey(mockTestId: string, examType: string, subjectIds: string[], chapterIds: string[], topicIds: string[]) {
   const normalize = (values: string[]) => [...values].sort().join(",");
   return ["subject", mockTestId, examType, normalize(subjectIds), normalize(chapterIds), normalize(topicIds)].join(":");
@@ -554,7 +563,7 @@ router.get("/subject-builder/options", requireAuth, requireOnboardingComplete, a
   try {
     const settings = await getSubjectMockSettings();
     if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
-    const examType = String(req.query["examType"] || "").toUpperCase();
+    const examType = normalizeSubjectExamType(req.query["examType"], req.user?.examMode);
     if (!["NEET", "JEE"].includes(examType)) return res.status(400).json({ error: "invalid_exam_type", message: "Select NEET or JEE." });
     const options = await getSubjectBuilderOptions(examType);
     const templateBySubject = options.templates.reduce((result: Record<string, string>, template: any) => {
@@ -579,7 +588,7 @@ router.post("/subject-builder/availability", requireAuth, requireOnboardingCompl
   try {
     const settings = await getSubjectMockSettings();
     if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
-    const examType = String(req.body?.examType || "").toUpperCase();
+    const examType = normalizeSubjectExamType(req.body?.examType, req.user?.examMode);
     const subjectIds = requestedIds(req.body?.subjectIds);
     const chapterIds = requestedIds(req.body?.chapterIds);
     const topicIds = requestedIds(req.body?.topicIds);
@@ -608,7 +617,7 @@ router.post("/subject-builder/prepare", requireAuth, requireOnboardingComplete, 
   try {
     const settings = await getSubjectMockSettings();
     if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
-    const examType = String(req.body?.examType || "").toUpperCase();
+    const examType = normalizeSubjectExamType(req.body?.examType, req.user?.examMode);
     const subjectId = toIdString(req.body?.subjectId);
     if (!["NEET", "JEE"].includes(examType) || !subjectId) return res.status(400).json({ error: "invalid_subject_selection", message: "Select a valid exam type and subject." });
     const examMatcher = new RegExp(`^${examType}$`, "i");
