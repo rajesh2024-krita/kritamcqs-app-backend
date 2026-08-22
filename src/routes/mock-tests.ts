@@ -57,7 +57,7 @@ async function getSubjectBuilderOptions(examType: string) {
     ],
   }).toArray() : [];
   const catalogTopicById = new Map([...catalogTopics, ...referencedTopicDocs].map((topic: any) => [toIdString(topic._id ?? topic.id), topic]));
-  const topicById = new Map<string, any>();
+  const topicById = new Map<string, any>(catalogTopicById);
   questionTopics.forEach((entry: any) => {
     const id = toIdString(entry._id);
     if (!id) return;
@@ -65,11 +65,16 @@ async function getSubjectBuilderOptions(examType: string) {
     topicById.set(id, catalogTopic || { _id: id, id, name: String(entry.name || `Topic ${id.slice(-6)}`), subjectId: toIdString(entry.subjectId), chapterId: toIdString(entry.chapterId) });
   });
   const topics = [...topicById.values()].sort((left: any, right: any) => String(left.name || "").localeCompare(String(right.name || "")));
-  const chapterIdsWithQuestions = new Set(topics.map((topic: any) => toIdString(topic.chapterId)).filter(Boolean));
-  return { templates, subjects, chapters: chapters.filter((chapter: any) => chapterIdsWithQuestions.has(toIdString(chapter._id))), topics };
+  return { templates, subjects, chapters, topics };
 }
 
-function subjectBuilderQuestionMatch(examType: string, _subjectIds: string[], chapterIds: string[], topicIds: string[]) {
+async function subjectBuilderQuestionMatch(examType: string, _subjectIds: string[], chapterIds: string[], topicIds: string[]) {
+  const topicObjectIds = topicIds.filter((id) => mongoose.isValidObjectId(id)).map((id) => new mongoose.Types.ObjectId(id));
+  const topicDocs = await mongoose.connection.collection("topics").find({
+    $or: [{ _id: { $in: topicObjectIds } }, { id: { $in: topicIds } }],
+  }).project({ name: 1, normalizedName: 1 }).toArray();
+  const topicNames = [...new Set(topicDocs.flatMap((topic: any) => [topic.name, topic.normalizedName])
+    .map((name) => String(name || "").trim().toLowerCase()).filter(Boolean))];
   return {
     ...buildManagedModeQuery(examType),
     $expr: {
@@ -80,12 +85,12 @@ function subjectBuilderQuestionMatch(examType: string, _subjectIds: string[], ch
             chapterIds.map(String),
           ],
         },
-        {
-          $in: [
-            { $convert: { input: "$topicId", to: "string", onError: "", onNull: "" } },
-            topicIds.map(String),
-          ],
-        },
+        { $or: [
+          { $in: [{ $convert: { input: "$topicId", to: "string", onError: "", onNull: "" } }, topicIds.map(String)] },
+          { $in: [{ $toLower: { $convert: { input: "$topicId", to: "string", onError: "", onNull: "" } } }, topicNames] },
+          { $in: [{ $toLower: { $convert: { input: "$topic", to: "string", onError: "", onNull: "" } } }, topicNames] },
+          { $in: [{ $toLower: { $convert: { input: "$topicName", to: "string", onError: "", onNull: "" } } }, topicNames] },
+        ] },
       ],
     },
     isVisibleToUsers: { $ne: false },
@@ -95,13 +100,13 @@ function subjectBuilderQuestionMatch(examType: string, _subjectIds: string[], ch
 
 async function countSubjectBuilderQuestions(examType: string, subjectIds: string[], chapterIds: string[], topicIds: string[]) {
   return mongoose.connection.collection("questions").countDocuments(
-    subjectBuilderQuestionMatch(examType, subjectIds, chapterIds, topicIds),
+    await subjectBuilderQuestionMatch(examType, subjectIds, chapterIds, topicIds),
   );
 }
 
 async function loadSubjectBuilderQuestions(examType: string, subjectIds: string[], chapterIds: string[], topicIds: string[], limit: number) {
   const rows = await mongoose.connection.collection("questions")
-    .find(subjectBuilderQuestionMatch(examType, subjectIds, chapterIds, topicIds))
+    .find(await subjectBuilderQuestionMatch(examType, subjectIds, chapterIds, topicIds))
     .project({ _id: 1 })
     .limit(limit)
     .toArray();
@@ -445,8 +450,8 @@ async function buildSubjectQuestionSet(item: any, body: any, userId: string, set
   const selectedTopicIds = requestedIds(body?.topicIds);
   const options = await getSubjectBuilderOptions(item.examType);
   const allowedSubjectIds = new Set(options.subjects.map((subject: any) => String(subject._id)));
-  const allowedChapterIds = new Set(options.chapters.map((chapter: any) => String(chapter._id)));
-  const allowedTopicIds = new Set(options.topics.map((topic: any) => String(topic._id)));
+  const allowedChapterIds = new Set(options.chapters.map((chapter: any) => toIdString(chapter._id ?? chapter.id)));
+  const allowedTopicIds = new Set(options.topics.map((topic: any) => toIdString(topic._id ?? topic.id)));
 
   if (!selectedSubjectIds.length || !selectedChapterIds.length || !selectedTopicIds.length) {
     throw Object.assign(new Error("Select at least one subject, chapter, and topic."), { statusCode: 400, code: "subject_selection_required" });
@@ -461,12 +466,12 @@ async function buildSubjectQuestionSet(item: any, body: any, userId: string, set
     throw Object.assign(new Error("A selected topic is not enabled for this mock test."), { statusCode: 400, code: "invalid_topic_selection" });
   }
 
-  const selectedChapterDocs = options.chapters.filter((chapter: any) => selectedChapterIds.includes(String(chapter._id)));
-  if (selectedChapterDocs.some((chapter: any) => !selectedSubjectIds.includes(String(chapter.subjectId)))) {
+  const selectedChapterDocs = options.chapters.filter((chapter: any) => selectedChapterIds.includes(toIdString(chapter._id ?? chapter.id)));
+  if (selectedChapterDocs.some((chapter: any) => !selectedSubjectIds.includes(toIdString(chapter.subjectId)))) {
     throw Object.assign(new Error("Selected chapters must belong to the selected subjects."), { statusCode: 400, code: "chapter_subject_mismatch" });
   }
-  const selectedTopicDocs = options.topics.filter((topic: any) => selectedTopicIds.includes(String(topic._id)));
-  if (selectedTopicDocs.some((topic: any) => !selectedChapterIds.includes(String(topic.chapterId)))) {
+  const selectedTopicDocs = options.topics.filter((topic: any) => selectedTopicIds.includes(toIdString(topic._id ?? topic.id)));
+  if (selectedTopicDocs.some((topic: any) => !selectedChapterIds.includes(toIdString(topic.chapterId)))) {
     throw Object.assign(new Error("Selected topics must belong to the selected chapters."), { statusCode: 400, code: "topic_chapter_mismatch" });
   }
 
@@ -638,11 +643,11 @@ router.post("/subject-builder/availability", requireAuth, requireOnboardingCompl
 
     const options = await getSubjectBuilderOptions(examType);
     const validSubjects = new Set(options.subjects.map((entry: any) => String(entry._id)));
-    const chapterMap = new Map(options.chapters.map((entry: any) => [String(entry._id), entry]));
-    const topicMap = new Map(options.topics.map((entry: any) => [String(entry._id), entry]));
+    const chapterMap = new Map(options.chapters.map((entry: any) => [toIdString(entry._id ?? entry.id), entry]));
+    const topicMap = new Map(options.topics.map((entry: any) => [toIdString(entry._id ?? entry.id), entry]));
     const invalid = subjectIds.some((id) => !validSubjects.has(id))
-      || chapterIds.some((id) => !chapterMap.has(id) || !subjectIds.includes(String((chapterMap.get(id) as any).subjectId)))
-      || topicIds.some((id) => !topicMap.has(id) || !chapterIds.includes(String((topicMap.get(id) as any).chapterId)));
+      || chapterIds.some((id) => !chapterMap.has(id) || !subjectIds.includes(toIdString((chapterMap.get(id) as any).subjectId)))
+      || topicIds.some((id) => !topicMap.has(id) || !chapterIds.includes(toIdString((topicMap.get(id) as any).chapterId)));
     if (invalid) return res.status(400).json({ error: "invalid_subject_selection", message: "The selected subjects, chapters, and topics do not match." });
 
     const requiredQuestionCount = Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || 10)));
