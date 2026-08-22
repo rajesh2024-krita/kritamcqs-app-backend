@@ -8,6 +8,7 @@ import {
   shuffleList,
 } from "../lib/adaptive-testing";
 import { shuffleQuestionOptionsForDelivery } from "../lib/question-randomization";
+import { buildManagedModeQuery } from "../lib/subjects";
 
 const router: IRouter = Router();
 const WEEKDAY_KEYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
@@ -45,7 +46,7 @@ async function getSubjectBuilderOptions(examType: string) {
   const topicCollection = mongoose.connection.collection("topics");
   const catalogTopics = await topicCollection.find({ chapterId: { $in: chapterVariants } }).sort({ name: 1 }).toArray();
   const questionTopics = chapterIds.length ? await Question.aggregate([
-    { $match: { examMode: examType, chapterId: { $in: chapterVariants }, topicId: { $exists: true, $nin: [null, ""] }, isVisibleToUsers: { $ne: false }, questionStatus: { $ne: "incomplete" } } },
+    { $match: { ...buildManagedModeQuery(examType), $expr: { $in: [{ $toString: "$chapterId" }, chapterIds] }, topicId: { $exists: true, $nin: [null, ""] }, isVisibleToUsers: { $ne: false }, questionStatus: { $ne: "incomplete" } } },
     { $group: { _id: "$topicId", subjectId: { $first: "$subjectId" }, chapterId: { $first: "$chapterId" }, name: { $first: { $ifNull: ["$topicName", "$topic"] } } } },
   ]) : [];
   const topicIds = questionTopics.map((entry: any) => toIdString(entry._id)).filter(Boolean);
@@ -55,22 +56,29 @@ async function getSubjectBuilderOptions(examType: string) {
       { id: { $in: topicIds } },
     ],
   }).toArray() : [];
-  const topicById = new Map([...catalogTopics, ...referencedTopicDocs].map((topic: any) => [toIdString(topic._id ?? topic.id), topic]));
+  const catalogTopicById = new Map([...catalogTopics, ...referencedTopicDocs].map((topic: any) => [toIdString(topic._id ?? topic.id), topic]));
+  const topicById = new Map<string, any>();
   questionTopics.forEach((entry: any) => {
     const id = toIdString(entry._id);
-    if (!id || topicById.has(id)) return;
-    topicById.set(id, { _id: id, id, name: String(entry.name || `Topic ${id.slice(-6)}`), subjectId: toIdString(entry.subjectId), chapterId: toIdString(entry.chapterId) });
+    if (!id) return;
+    const catalogTopic: any = catalogTopicById.get(id);
+    topicById.set(id, catalogTopic || { _id: id, id, name: String(entry.name || `Topic ${id.slice(-6)}`), subjectId: toIdString(entry.subjectId), chapterId: toIdString(entry.chapterId) });
   });
   const topics = [...topicById.values()].sort((left: any, right: any) => String(left.name || "").localeCompare(String(right.name || "")));
-  return { templates, subjects, chapters, topics };
+  const chapterIdsWithQuestions = new Set(topics.map((topic: any) => toIdString(topic.chapterId)).filter(Boolean));
+  return { templates, subjects, chapters: chapters.filter((chapter: any) => chapterIdsWithQuestions.has(toIdString(chapter._id))), topics };
 }
 
 function subjectBuilderQuestionMatch(examType: string, subjectIds: string[], chapterIds: string[], topicIds: string[]) {
   return {
-    examMode: examType,
-    subjectId: { $in: subjectIds.flatMap(buildIdVariants) },
-    chapterId: { $in: chapterIds.flatMap(buildIdVariants) },
-    topicId: { $in: topicIds.flatMap(buildIdVariants) },
+    ...buildManagedModeQuery(examType),
+    $expr: {
+      $and: [
+        { $in: [{ $toString: "$subjectId" }, subjectIds.map(String)] },
+        { $in: [{ $toString: "$chapterId" }, chapterIds.map(String)] },
+        { $in: [{ $toString: "$topicId" }, topicIds.map(String)] },
+      ],
+    },
     isVisibleToUsers: { $ne: false },
     questionStatus: { $ne: "incomplete" },
   };
@@ -393,9 +401,12 @@ function normalizeSubjectExamType(value: unknown, fallback: unknown = "") {
   const normalize = (candidate: unknown) => String(Array.isArray(candidate) ? candidate[0] : candidate || "")
     .trim().toUpperCase().replace(/[^A-Z]/g, "");
   const requested = normalize(value);
-  if (requested === "NEET" || requested === "JEE") return requested;
+  if (requested.startsWith("NEET")) return "NEET";
+  if (requested.startsWith("JEE")) return "JEE";
   const fallbackMode = normalize(fallback);
-  return fallbackMode === "NEET" || fallbackMode === "JEE" ? fallbackMode : "";
+  if (fallbackMode.startsWith("NEET")) return "NEET";
+  if (fallbackMode.startsWith("JEE")) return "JEE";
+  return "";
 }
 
 function buildSubjectTestKey(mockTestId: string, examType: string, subjectIds: string[], chapterIds: string[], topicIds: string[]) {
@@ -778,7 +789,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       return;
     }
     if (item.testType === "subject" && questions.some((question: any) =>
-      !selectedSubjectIds.includes(String(question.subjectId)) || String(question.examMode).toUpperCase() !== item.examType
+      !selectedSubjectIds.includes(toIdString(question.subjectId)) || normalizeSubjectExamType(question.examMode || question.exam) !== item.examType
     )) {
       res.status(400).json({ error: "invalid_subject_questions", message: "One or more questions do not belong to this exam mode and subject." });
       return;
