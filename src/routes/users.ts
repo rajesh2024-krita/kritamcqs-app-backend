@@ -824,7 +824,7 @@ router.get("/stats", requireAuth, requireOnboardingComplete, async (req: Authent
 
   const latestAttemptByMockTest = new Map<string, { attempt: any; session: any }>();
   mockAttempts.forEach((item) => {
-    const mockTestId = String(item.session?.sourceSessionId ?? item.attempt.sourceSessionId ?? item.session?.id ?? item.attempt.sessionId);
+    const mockTestId = String((item.session?.filterSnapshot as any)?.generatedTestKey ?? item.session?.sourceSessionId ?? item.attempt.sourceSessionId ?? item.session?.id ?? item.attempt.sessionId);
     const existing = latestAttemptByMockTest.get(mockTestId);
     const currentTime = new Date(item.attempt.completedAt ?? item.attempt.createdAt).getTime();
     const existingTime = existing ? new Date(existing.attempt.completedAt ?? existing.attempt.createdAt).getTime() : -1;
@@ -841,11 +841,14 @@ router.get("/stats", requireAuth, requireOnboardingComplete, async (req: Authent
       return {
         attemptId: attempt.id,
         sessionId: attempt.sessionId,
-        mockTestId: session?.sourceSessionId ?? null,
+        mockTestId: (session?.filterSnapshot as any)?.mockTestId ?? session?.sourceSessionId ?? null,
+        generatedTestKey: (session?.filterSnapshot as any)?.generatedTestKey ?? session?.sourceSessionId ?? null,
+        attemptNumber: Number(attempt.attemptNumber ?? 1),
         title: session?.title ?? "Mock Test",
         testType: String((session?.filterSnapshot as any)?.testType ?? "full"),
         subjectId: (session?.filterSnapshot as any)?.subjectId ?? null,
         subjectName: (session?.filterSnapshot as any)?.subjectName ?? "",
+        subjectNames: (session?.filterSnapshot as any)?.subjectNames ?? [],
         chapterIds: (session?.filterSnapshot as any)?.chapterIds ?? [],
         topicIds: (session?.filterSnapshot as any)?.topicIds ?? [],
         chapterNames: (session?.filterSnapshot as any)?.chapterNames ?? [],

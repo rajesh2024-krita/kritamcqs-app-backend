@@ -1008,7 +1008,9 @@ router.post("/:testId/submit", requireAuth, requireOnboardingComplete, async (re
       maxScore,
     });
 
-    const comparisonSourceId = session.sourceSessionId ?? session.id;
+    const comparisonSourceId = session.origin === "mock_test" && (session.filterSnapshot as any)?.testType === "subject"
+      ? String((session.filterSnapshot as any)?.generatedTestKey || session.sourceSessionId || session.id)
+      : session.sourceSessionId ?? session.id;
     const previousAttempts = await SessionAttempt.find({ userId, sourceSessionId: comparisonSourceId }).sort({ createdAt: 1 });
     const firstAttempt = previousAttempts[0];
 
@@ -1016,7 +1018,7 @@ router.post("/:testId/submit", requireAuth, requireOnboardingComplete, async (re
       userId,
       sessionId: session.id,
       sourceSessionId: comparisonSourceId,
-      attemptNumber: session.origin === "weak_area"
+      attemptNumber: session.origin === "weak_area" || (session.origin === "mock_test" && (session.filterSnapshot as any)?.testType === "subject")
         ? (await SessionAttempt.countDocuments({ userId, sourceSessionId: comparisonSourceId })) + 1
         : await getSessionAttemptNumber(session.id),
       score,

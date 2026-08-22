@@ -369,6 +369,11 @@ function requestedIds(value: unknown) {
   return [...new Set((Array.isArray(value) ? value : []).map(toIdString).filter(Boolean))];
 }
 
+function buildSubjectTestKey(mockTestId: string, examType: string, subjectIds: string[], chapterIds: string[], topicIds: string[]) {
+  const normalize = (values: string[]) => [...values].sort().join(",");
+  return ["subject", mockTestId, examType, normalize(subjectIds), normalize(chapterIds), normalize(topicIds)].join(":");
+}
+
 async function buildSubjectQuestionSet(item: any, body: any, userId: string, settings: any) {
   const selectedSubjectIds = requestedIds(body?.subjectIds);
   const selectedChapterIds = requestedIds(body?.chapterIds);
@@ -792,6 +797,13 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
     const chapterNameMap = new Map(sessionChapters.map((item: any) => [toIdString(item?._id), String(item?.name || "").trim()]));
     const yearMap = new Map(sessionYears.map((item: any) => [toIdString(item?._id), item]));
 
+    const generatedTestKey = item.testType === "subject"
+      ? buildSubjectTestKey(String(item.id), item.examType, selectedSubjectIds, selectedChapterIds, selectedTopicIds)
+      : String(item.id);
+    const completedSelectionAttempts = item.testType === "subject"
+      ? await SessionAttempt.countDocuments({ userId, sourceSessionId: generatedTestKey, completedAt: { $ne: null } })
+      : 0;
+
     const session = await createLearningSession({
       userId: req.userId!,
       type: "test",
@@ -800,6 +812,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       questionIds: sessionQuestions.map((question: any) => String(question._id)),
       filterSnapshot: {
         mockTestId: item.id,
+        generatedTestKey,
         testType: item.testType ?? "full",
         examType: item.examType,
         subjectId: selectedSubjectIds[0] ?? item.subjectId ?? null,
@@ -849,6 +862,8 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       sessionId: session.id,
       origin: "mock_test",
       totalQuestions: sessionQuestions.length,
+      attemptCount: completedSelectionAttempts,
+      nextAttemptNumber: completedSelectionAttempts + 1,
       timeLimit: Number(item.durationMinutes) * 60,
       title: item.title,
       prediction: buildMockPrediction(item),
