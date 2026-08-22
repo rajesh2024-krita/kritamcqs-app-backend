@@ -69,14 +69,23 @@ async function getSubjectBuilderOptions(examType: string) {
   return { templates, subjects, chapters: chapters.filter((chapter: any) => chapterIdsWithQuestions.has(toIdString(chapter._id))), topics };
 }
 
-function subjectBuilderQuestionMatch(examType: string, subjectIds: string[], chapterIds: string[], topicIds: string[]) {
+function subjectBuilderQuestionMatch(examType: string, _subjectIds: string[], chapterIds: string[], topicIds: string[]) {
   return {
     ...buildManagedModeQuery(examType),
     $expr: {
       $and: [
-        { $in: [{ $toString: "$subjectId" }, subjectIds.map(String)] },
-        { $in: [{ $toString: "$chapterId" }, chapterIds.map(String)] },
-        { $in: [{ $toString: "$topicId" }, topicIds.map(String)] },
+        {
+          $in: [
+            { $convert: { input: "$chapterId", to: "string", onError: "", onNull: "" } },
+            chapterIds.map(String),
+          ],
+        },
+        {
+          $in: [
+            { $convert: { input: "$topicId", to: "string", onError: "", onNull: "" } },
+            topicIds.map(String),
+          ],
+        },
       ],
     },
     isVisibleToUsers: { $ne: false },
@@ -789,9 +798,11 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
       return;
     }
     if (item.testType === "subject" && questions.some((question: any) =>
-      !selectedSubjectIds.includes(toIdString(question.subjectId)) || normalizeSubjectExamType(question.examMode || question.exam) !== item.examType
+      !selectedChapterIds.includes(toIdString(question.chapterId))
+      || !selectedTopicIds.includes(toIdString(question.topicId))
+      || normalizeSubjectExamType(question.examMode || question.exam) !== item.examType
     )) {
-      res.status(400).json({ error: "invalid_subject_questions", message: "One or more questions do not belong to this exam mode and subject." });
+      res.status(400).json({ error: "invalid_subject_questions", message: "One or more questions do not belong to the selected exam, chapters, and topics." });
       return;
     }
 
