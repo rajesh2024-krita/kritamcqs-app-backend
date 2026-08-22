@@ -4,6 +4,9 @@ import { AppNavigationEvent, AppUsageEvent, AppUsageSession, AppUsageSettings } 
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 
 const router: IRouter = Router();
+let cachedUsageSettings: any = null;
+let cachedUsageSettingsUntil = 0;
+let usageSettingsPromise: Promise<any> | null = null;
 
 const eventSchema = z.object({
   path: z.string().trim().min(1).max(300),
@@ -96,6 +99,15 @@ async function fetchFromAdmin(path: string, init?: RequestInit) {
 }
 
 async function getUsageSettings() {
+  if (cachedUsageSettings && Date.now() < cachedUsageSettingsUntil) return cachedUsageSettings;
+  if (usageSettingsPromise) return usageSettingsPromise;
+  usageSettingsPromise = loadUsageSettings().finally(() => {
+    usageSettingsPromise = null;
+  });
+  return usageSettingsPromise;
+}
+
+async function loadUsageSettings() {
   const localSettings = await AppUsageSettings.findOneAndUpdate(
     { key: "default" },
     { $setOnInsert: { key: "default", enabled: true, automaticCleanupEnabled: false, retentionDays: 90, sessionTimeoutMinutes: 30 } },
@@ -107,21 +119,29 @@ async function getUsageSettings() {
   }).catch(() => null);
   if (!response?.ok) {
     if (!localSettings.enabled) {
-      return AppUsageSettings.findOneAndUpdate(
+      const fallbackSettings = await AppUsageSettings.findOneAndUpdate(
         { key: "default" },
         { $set: { enabled: true } },
         { upsert: true, new: true, setDefaultsOnInsert: true },
       );
+      cachedUsageSettings = fallbackSettings;
+      cachedUsageSettingsUntil = Date.now() + 60_000;
+      return fallbackSettings;
     }
+    cachedUsageSettings = localSettings;
+    cachedUsageSettingsUntil = Date.now() + 60_000;
     return localSettings;
   }
   const adminPayload = await response.json();
   const adminSettings = usageSettingsSchema.parse(adminPayload?.data || adminPayload);
-  return AppUsageSettings.findOneAndUpdate(
+  const syncedSettings = await AppUsageSettings.findOneAndUpdate(
     { key: "default" },
     { key: "default", ...adminSettings },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
+  cachedUsageSettings = syncedSettings;
+  cachedUsageSettingsUntil = Date.now() + 60_000;
+  return syncedSettings;
 }
 
 function mapSettings(settings: { enabled?: boolean; automaticCleanupEnabled?: boolean; retentionDays?: number; sessionTimeoutMinutes?: number }) {

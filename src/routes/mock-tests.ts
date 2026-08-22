@@ -37,11 +37,31 @@ async function getSubjectBuilderOptions(examType: string) {
   const examMatcher = new RegExp(`^${examType}$`, "i");
   const subjects = await Subject.find({ $or: [{ examType: examMatcher }, { examMode: examMatcher }] }).sort({ name: 1 }).lean();
   const subjectIds = subjects.map((item: any) => String(item._id));
-  const allChapters = await Chapter.find({ subjectId: { $in: subjectIds } }).sort({ name: 1 }).lean();
-  const chapters = allChapters;
+  const subjectVariants = subjectIds.flatMap(buildIdVariants);
+  const chapters = await mongoose.connection.collection("chapters")
+    .find({ subjectId: { $in: subjectVariants } }).sort({ name: 1 }).toArray();
   const chapterIds = chapters.map((chapter: any) => String(chapter._id));
-  const allTopics = await Topic.find({ chapterId: { $in: chapterIds.flatMap(buildIdVariants) } }).sort({ name: 1 }).lean();
-  const topics = allTopics;
+  const chapterVariants = chapterIds.flatMap(buildIdVariants);
+  const topicCollection = mongoose.connection.collection("topics");
+  const catalogTopics = await topicCollection.find({ chapterId: { $in: chapterVariants } }).sort({ name: 1 }).toArray();
+  const questionTopics = chapterIds.length ? await Question.aggregate([
+    { $match: { examMode: examType, chapterId: { $in: chapterVariants }, topicId: { $exists: true, $nin: [null, ""] }, isVisibleToUsers: { $ne: false }, questionStatus: { $ne: "incomplete" } } },
+    { $group: { _id: "$topicId", subjectId: { $first: "$subjectId" }, chapterId: { $first: "$chapterId" }, name: { $first: { $ifNull: ["$topicName", "$topic"] } } } },
+  ]) : [];
+  const topicIds = questionTopics.map((entry: any) => toIdString(entry._id)).filter(Boolean);
+  const referencedTopicDocs = topicIds.length ? await topicCollection.find({
+    $or: [
+      { _id: { $in: topicIds.filter((id) => mongoose.isValidObjectId(id)).map((id) => new mongoose.Types.ObjectId(id)) } },
+      { id: { $in: topicIds } },
+    ],
+  }).toArray() : [];
+  const topicById = new Map([...catalogTopics, ...referencedTopicDocs].map((topic: any) => [toIdString(topic._id ?? topic.id), topic]));
+  questionTopics.forEach((entry: any) => {
+    const id = toIdString(entry._id);
+    if (!id || topicById.has(id)) return;
+    topicById.set(id, { _id: id, id, name: String(entry.name || `Topic ${id.slice(-6)}`), subjectId: toIdString(entry.subjectId), chapterId: toIdString(entry.chapterId) });
+  });
+  const topics = [...topicById.values()].sort((left: any, right: any) => String(left.name || "").localeCompare(String(right.name || "")));
   return { templates, subjects, chapters, topics };
 }
 
