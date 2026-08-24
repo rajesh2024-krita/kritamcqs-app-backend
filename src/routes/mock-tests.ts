@@ -15,6 +15,7 @@ const WEEKDAY_KEYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
 const SUBJECT_MOCK_SETTINGS_DEFAULTS = {
   key: "default", enabled: true, premiumAccess: true, freeAccess: false,
   defaultQuestionCount: 10, maximumQuestionCount: 50,
+  unlimitedQuestions: false,
   prioritizeUnseenQuestions: true, allowQuestionReuse: true,
 };
 
@@ -475,13 +476,20 @@ async function buildSubjectQuestionSet(item: any, body: any, userId: string, set
     throw Object.assign(new Error("Selected topics must belong to the selected chapters."), { statusCode: 400, code: "topic_chapter_mismatch" });
   }
 
-  const targetCount = Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || item.totalQuestions || 10)));
+  const configuredCount = Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || item.totalQuestions || 10)));
+  const availableCount = settings.unlimitedQuestions
+    ? await countSubjectBuilderQuestions(item.examType, selectedSubjectIds, selectedChapterIds, selectedTopicIds)
+    : configuredCount;
+  const targetCount = settings.unlimitedQuestions ? availableCount : configuredCount;
+  if (targetCount < 1) {
+    throw Object.assign(new Error("No questions are available for the selected topics."), { statusCode: 400, code: "insufficient_questions" });
+  }
   const questions = await loadSubjectBuilderQuestions(
     item.examType,
     selectedSubjectIds,
     selectedChapterIds,
     selectedTopicIds,
-    Math.max(targetCount * 10, 500),
+    settings.unlimitedQuestions ? targetCount : Math.max(targetCount * 10, 500),
   );
   const historyCollection = mongoose.connection.collection("subjectmockquestionhistories");
   const previouslyServed = settings.prioritizeUnseenQuestions === false ? [] : await historyCollection
@@ -490,8 +498,9 @@ async function buildSubjectQuestionSet(item: any, body: any, userId: string, set
   const seenIds = new Set(previouslyServed.map((entry: any) => String(entry.questionId)));
   const unseen = shuffleList(questions.filter((question: any) => !seenIds.has(String(question._id))));
   const reused = settings.allowQuestionReuse === false ? [] : shuffleList(questions.filter((question: any) => seenIds.has(String(question._id))));
-  const selected = [...unseen, ...reused].slice(0, targetCount);
-  if (selected.length < targetCount) {
+  const eligibleQuestions = [...unseen, ...reused];
+  const selected = settings.unlimitedQuestions ? eligibleQuestions : eligibleQuestions.slice(0, targetCount);
+  if (!selected.length || (!settings.unlimitedQuestions && selected.length < targetCount)) {
     throw Object.assign(new Error(`Only ${selected.length} questions are available; ${targetCount} are required.`), { statusCode: 400, code: "insufficient_questions" });
   }
   return { questions: selected, selectedSubjectIds, selectedChapterIds, selectedTopicIds, seenIds };
@@ -622,6 +631,7 @@ router.get("/subject-builder/options", requireAuth, requireOnboardingComplete, a
       chapters: options.chapters,
       topics: options.topics,
       templateBySubject,
+      unlimitedQuestions: settings.unlimitedQuestions === true,
       requiredQuestionCount: Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || 10))),
     } });
   } catch (error) {
@@ -639,7 +649,7 @@ router.post("/subject-builder/availability", requireAuth, requireOnboardingCompl
     const chapterIds = requestedIds(req.body?.chapterIds);
     const topicIds = requestedIds(req.body?.topicIds);
     if (!["NEET", "JEE"].includes(examType)) return res.status(400).json({ error: "invalid_exam_type", message: "Select NEET or JEE." });
-    if (!subjectIds.length || !chapterIds.length || !topicIds.length) return res.json({ success: true, data: { availableQuestionCount: 0, requiredQuestionCount: Number(settings.defaultQuestionCount || 10), canGenerate: false } });
+    if (!subjectIds.length || !chapterIds.length || !topicIds.length) return res.json({ success: true, data: { availableQuestionCount: 0, requiredQuestionCount: Number(settings.defaultQuestionCount || 10), unlimitedQuestions: settings.unlimitedQuestions === true, canGenerate: false } });
 
     const options = await getSubjectBuilderOptions(examType);
     const validSubjects = new Set(options.subjects.map((entry: any) => String(entry._id)));
@@ -652,7 +662,7 @@ router.post("/subject-builder/availability", requireAuth, requireOnboardingCompl
 
     const requiredQuestionCount = Math.max(1, Math.min(Number(settings.maximumQuestionCount || 50), Number(settings.defaultQuestionCount || 10)));
     const availableQuestionCount = await countSubjectBuilderQuestions(examType, subjectIds, chapterIds, topicIds);
-    res.json({ success: true, data: { availableQuestionCount, requiredQuestionCount, canGenerate: availableQuestionCount >= requiredQuestionCount } });
+    res.json({ success: true, data: { availableQuestionCount, requiredQuestionCount, unlimitedQuestions: settings.unlimitedQuestions === true, canGenerate: settings.unlimitedQuestions === true ? availableQuestionCount > 0 : availableQuestionCount >= requiredQuestionCount } });
   } catch (error) {
     req.log.error({ error }, "Subject builder availability failed");
     res.status(500).json({ error: "subject_availability_failed", message: "Failed to calculate available questions." });
