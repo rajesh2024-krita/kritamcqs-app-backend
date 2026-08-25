@@ -21,6 +21,15 @@ const SUBJECT_MOCK_SETTINGS_DEFAULTS = {
   accessCardMessage: "Subject-based mock test access is not enabled for this account.",
   accessCardCtaText: "View Plans",
   accessCardSubscriptionUrl: "/subscription",
+  accessCardHtml: `<div class="subject-mock-access-card__icon" aria-hidden="true">&#128274;</div>
+<h2 id="subject-mock-access-title">{{title}}</h2>
+<p>{{message}}</p>
+<a href="{{subscriptionUrl}}">{{ctaText}}</a>`,
+  accessCardCss: `.subject-mock-access-card{box-sizing:border-box;width:min(100%,680px);margin:clamp(12px,4vw,32px) auto;padding:clamp(20px,5vw,40px);border:1px solid #ddd6fe;border-radius:clamp(18px,3vw,28px);background:linear-gradient(135deg,#faf5ff 0%,#eff6ff 100%);box-shadow:0 18px 45px rgba(76,29,149,.12);color:#1e1b4b;text-align:center;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.subject-mock-access-card *{box-sizing:border-box}.subject-mock-access-card__icon{display:grid;width:56px;height:56px;margin:0 auto 16px;place-items:center;border-radius:50%;background:#ede9fe;color:#6d28d9;font-size:28px;line-height:1}
+.subject-mock-access-card h2{margin:0;font-size:clamp(1.25rem,4vw,1.8rem);line-height:1.25}.subject-mock-access-card p{max-width:52ch;margin:12px auto 24px;color:#475569;font-size:clamp(.95rem,2.5vw,1.05rem);line-height:1.65}
+.subject-mock-access-card a{display:inline-flex;min-height:48px;max-width:100%;align-items:center;justify-content:center;border-radius:14px;background:#6d28d9;padding:12px clamp(22px,6vw,34px);color:#fff;text-decoration:none;font-weight:800;box-shadow:0 8px 18px rgba(109,40,217,.25)}
+@media(max-width:480px){.subject-mock-access-card{margin:12px 0;padding:22px 16px}.subject-mock-access-card a{width:100%}}`,
 };
 
 async function getSubjectMockSettings() {
@@ -53,19 +62,16 @@ function buildSubjectMockAccessResponse(settings: any) {
   const message = String(settings.accessCardMessage || SUBJECT_MOCK_SETTINGS_DEFAULTS.accessCardMessage);
   const ctaText = String(settings.accessCardCtaText || SUBJECT_MOCK_SETTINGS_DEFAULTS.accessCardCtaText);
   const subscriptionUrl = safeSubscriptionUrl(settings.accessCardSubscriptionUrl);
-  const html = `<section class="subject-mock-access-card" role="region" aria-labelledby="subject-mock-access-title">
-  <style>
-    .subject-mock-access-card{box-sizing:border-box;width:min(100%,680px);margin:clamp(12px,4vw,32px) auto;padding:clamp(20px,5vw,40px);border:1px solid #ddd6fe;border-radius:clamp(18px,3vw,28px);background:linear-gradient(135deg,#faf5ff 0%,#eff6ff 100%);box-shadow:0 18px 45px rgba(76,29,149,.12);color:#1e1b4b;text-align:center;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-    .subject-mock-access-card *{box-sizing:border-box}.subject-mock-access-card__icon{display:grid;width:56px;height:56px;margin:0 auto 16px;place-items:center;border-radius:50%;background:#ede9fe;color:#6d28d9;font-size:28px;line-height:1}
-    .subject-mock-access-card h2{margin:0;font-size:clamp(1.25rem,4vw,1.8rem);line-height:1.25}.subject-mock-access-card p{max-width:52ch;margin:12px auto 24px;color:#475569;font-size:clamp(.95rem,2.5vw,1.05rem);line-height:1.65}
-    .subject-mock-access-card a{display:inline-flex;min-height:48px;max-width:100%;align-items:center;justify-content:center;border-radius:14px;background:#6d28d9;padding:12px clamp(22px,6vw,34px);color:#fff;text-decoration:none;font-weight:800;box-shadow:0 8px 18px rgba(109,40,217,.25);transition:transform .2s ease,background-color .2s ease}.subject-mock-access-card a:hover{background:#5b21b6;transform:translateY(-1px)}.subject-mock-access-card a:focus-visible{outline:3px solid #a78bfa;outline-offset:3px}
-    @media(max-width:480px){.subject-mock-access-card{margin:12px 0;padding:22px 16px}.subject-mock-access-card a{width:100%}}@media(prefers-reduced-motion:reduce){.subject-mock-access-card a{transition:none}}
-  </style>
-  <div class="subject-mock-access-card__icon" aria-hidden="true">&#128274;</div>
-  <h2 id="subject-mock-access-title">${escapeHtml(title)}</h2>
-  <p>${escapeHtml(message)}</p>
-  <a href="${escapeHtml(subscriptionUrl)}">${escapeHtml(ctaText)}</a>
-</section>`;
+  const cardMarkup = String(settings.accessCardHtml || SUBJECT_MOCK_SETTINGS_DEFAULTS.accessCardHtml)
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, "")
+    .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
+    .replace(/javascript\s*:/gi, "")
+    .replace(/{{title}}/g, escapeHtml(title))
+    .replace(/{{message}}/g, escapeHtml(message))
+    .replace(/{{ctaText}}/g, escapeHtml(ctaText))
+    .replace(/{{subscriptionUrl}}/g, escapeHtml(subscriptionUrl));
+  const cardCss = String(settings.accessCardCss || SUBJECT_MOCK_SETTINGS_DEFAULTS.accessCardCss).replace(/<\/?style\b[^>]*>/gi, "");
+  const html = `<section class="subject-mock-access-card" role="region" aria-labelledby="subject-mock-access-title"><style>${cardCss}</style>${cardMarkup}</section>`;
 
   return {
     error: "subject_mock_access_required",
