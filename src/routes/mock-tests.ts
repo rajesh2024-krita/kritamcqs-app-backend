@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Response } from "express";
 import { Chapter, MockTest, Question, QuestionAttempt, SessionAttempt, Subject, Topic, Year, mongoose } from "@api/db";
 import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { requireOnboardingComplete } from "../middlewares/onboarding";
@@ -17,6 +17,10 @@ const SUBJECT_MOCK_SETTINGS_DEFAULTS = {
   defaultQuestionCount: 10, maximumQuestionCount: 50,
   unlimitedQuestions: false,
   prioritizeUnseenQuestions: true, allowQuestionReuse: true,
+  accessCardTitle: "Subject-Based Mock Test",
+  accessCardMessage: "Subject-based mock test access is not enabled for this account.",
+  accessCardCtaText: "View Plans",
+  accessCardSubscriptionUrl: "/subscription",
 };
 
 async function getSubjectMockSettings() {
@@ -28,6 +32,51 @@ function canAccessSubjectMocks(user: any, settings: any) {
   if (!settings.enabled) return false;
   if (typeof user?.subjectMockTestAccess === "boolean") return user.subjectMockTestAccess;
   return user?.isPremium ? settings.premiumAccess !== false : settings.freeAccess === true;
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function safeSubscriptionUrl(value: unknown) {
+  const url = String(value || SUBJECT_MOCK_SETTINGS_DEFAULTS.accessCardSubscriptionUrl).trim();
+  return /^(https?:\/\/|\/)(?!\/)/i.test(url) ? url : SUBJECT_MOCK_SETTINGS_DEFAULTS.accessCardSubscriptionUrl;
+}
+
+function buildSubjectMockAccessResponse(settings: any) {
+  const title = String(settings.accessCardTitle || SUBJECT_MOCK_SETTINGS_DEFAULTS.accessCardTitle);
+  const message = String(settings.accessCardMessage || SUBJECT_MOCK_SETTINGS_DEFAULTS.accessCardMessage);
+  const ctaText = String(settings.accessCardCtaText || SUBJECT_MOCK_SETTINGS_DEFAULTS.accessCardCtaText);
+  const subscriptionUrl = safeSubscriptionUrl(settings.accessCardSubscriptionUrl);
+  const html = `<section class="subject-mock-access-card" role="region" aria-labelledby="subject-mock-access-title">
+  <style>
+    .subject-mock-access-card{box-sizing:border-box;width:min(100%,680px);margin:clamp(12px,4vw,32px) auto;padding:clamp(20px,5vw,40px);border:1px solid #ddd6fe;border-radius:clamp(18px,3vw,28px);background:linear-gradient(135deg,#faf5ff 0%,#eff6ff 100%);box-shadow:0 18px 45px rgba(76,29,149,.12);color:#1e1b4b;text-align:center;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    .subject-mock-access-card *{box-sizing:border-box}.subject-mock-access-card__icon{display:grid;width:56px;height:56px;margin:0 auto 16px;place-items:center;border-radius:50%;background:#ede9fe;color:#6d28d9;font-size:28px;line-height:1}
+    .subject-mock-access-card h2{margin:0;font-size:clamp(1.25rem,4vw,1.8rem);line-height:1.25}.subject-mock-access-card p{max-width:52ch;margin:12px auto 24px;color:#475569;font-size:clamp(.95rem,2.5vw,1.05rem);line-height:1.65}
+    .subject-mock-access-card a{display:inline-flex;min-height:48px;max-width:100%;align-items:center;justify-content:center;border-radius:14px;background:#6d28d9;padding:12px clamp(22px,6vw,34px);color:#fff;text-decoration:none;font-weight:800;box-shadow:0 8px 18px rgba(109,40,217,.25);transition:transform .2s ease,background-color .2s ease}.subject-mock-access-card a:hover{background:#5b21b6;transform:translateY(-1px)}.subject-mock-access-card a:focus-visible{outline:3px solid #a78bfa;outline-offset:3px}
+    @media(max-width:480px){.subject-mock-access-card{margin:12px 0;padding:22px 16px}.subject-mock-access-card a{width:100%}}@media(prefers-reduced-motion:reduce){.subject-mock-access-card a{transition:none}}
+  </style>
+  <div class="subject-mock-access-card__icon" aria-hidden="true">&#128274;</div>
+  <h2 id="subject-mock-access-title">${escapeHtml(title)}</h2>
+  <p>${escapeHtml(message)}</p>
+  <a href="${escapeHtml(subscriptionUrl)}">${escapeHtml(ctaText)}</a>
+</section>`;
+
+  return {
+    error: "subject_mock_access_required",
+    message,
+    accessGranted: false,
+    accessCard: { contentType: "text/html; charset=utf-8", html, title, message, ctaText, subscriptionUrl },
+  };
+}
+
+function sendSubjectMockAccessRequired(res: Response, settings: any) {
+  return res.status(403).json(buildSubjectMockAccessResponse(settings));
 }
 
 async function getSubjectBuilderOptions(examType: string) {
@@ -617,7 +666,7 @@ router.get("/performance/subject", requireAuth, requireOnboardingComplete, async
 router.get("/subject-builder/options", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   try {
     const settings = await getSubjectMockSettings();
-    if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
+    if (!canAccessSubjectMocks(req.user, settings)) return sendSubjectMockAccessRequired(res, settings);
     const examType = normalizeSubjectExamType(req.query["examType"], req.user?.examMode);
     if (!["NEET", "JEE"].includes(examType)) return res.status(400).json({ error: "invalid_exam_type", message: "Select NEET or JEE." });
     const options = await getSubjectBuilderOptions(examType);
@@ -643,7 +692,7 @@ router.get("/subject-builder/options", requireAuth, requireOnboardingComplete, a
 router.post("/subject-builder/availability", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   try {
     const settings = await getSubjectMockSettings();
-    if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
+    if (!canAccessSubjectMocks(req.user, settings)) return sendSubjectMockAccessRequired(res, settings);
     const examType = normalizeSubjectExamType(req.body?.examType, req.user?.examMode);
     const subjectIds = requestedIds(req.body?.subjectIds);
     const chapterIds = requestedIds(req.body?.chapterIds);
@@ -672,7 +721,7 @@ router.post("/subject-builder/availability", requireAuth, requireOnboardingCompl
 router.post("/subject-builder/prepare", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   try {
     const settings = await getSubjectMockSettings();
-    if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
+    if (!canAccessSubjectMocks(req.user, settings)) return sendSubjectMockAccessRequired(res, settings);
     const examType = normalizeSubjectExamType(req.body?.examType, req.user?.examMode);
     const subjectId = toIdString(req.body?.subjectId);
     if (!["NEET", "JEE"].includes(examType) || !subjectId) return res.status(400).json({ error: "invalid_subject_selection", message: "Select a valid exam type and subject." });
@@ -720,7 +769,7 @@ router.post("/subject-builder/prepare", requireAuth, requireOnboardingComplete, 
 router.get("/:id/subject-options", requireAuth, requireOnboardingComplete, async (req: AuthenticatedRequest, res) => {
   try {
     const settings = await getSubjectMockSettings();
-    if (!canAccessSubjectMocks(req.user, settings)) return res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
+    if (!canAccessSubjectMocks(req.user, settings)) return sendSubjectMockAccessRequired(res, settings);
     const item = await MockTest.findById(req.params["id"]);
     if (!item || !item.isActive || item.testType !== "subject") return res.status(404).json({ error: "subject_mock_not_found", message: "Subject mock test not found." });
     const chapterFilter: any = { subjectId: String(item.subjectId) };
@@ -781,7 +830,7 @@ router.post("/:id/start", requireAuth, requireOnboardingComplete, async (req: Au
     const subjectSettings = await getSubjectMockSettings();
     const subjectAccess = canAccessSubjectMocks(user, subjectSettings);
     if (item.testType === "subject" && !subjectAccess) {
-      res.status(403).json({ error: "subject_mock_access_required", message: "Subject-based mock test access is not enabled for this account." });
+      sendSubjectMockAccessRequired(res, subjectSettings);
       return;
     }
     const completedByUser = await hasCompletedMockTest(userId, item.id);
