@@ -1,0 +1,11 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.kritamcqs.androidapp",
+      "sha256_cert_fingerprints":
+        ["B6:BD:81:36:00:89:31:A8:C3:E2:A4:E8:24:3E:77:F8:55:C5:25:EC:4B:2F:3C:7E:99:52:F6:48:E2:55:57:F3"]
+    }
+  }
+]
