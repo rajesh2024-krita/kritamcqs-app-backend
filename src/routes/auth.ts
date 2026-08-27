@@ -7,6 +7,7 @@ import { z } from "zod";
 import { generateOtp, generateResetToken, hashOtp, hashPassword, hashResetToken, verifyPassword } from "../lib/password";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 import { getFirebaseAdminApp, getFirebaseAuth } from "../lib/firebase";
+import { attachReferralToUser } from "../services/affiliateService";
 
 const router: IRouter = Router();
 
@@ -308,6 +309,7 @@ router.post("/register", async (req, res) => {
       isPremium: false,
       isAdmin: false,
     }).save();
+    await attachReferralToUser(String(req.body?.referralClickId || ""), String(user._id), user.createdAt);
     await markLogin(user);
 
     const invoiceSettings = await InvoiceSettings.findOne({ key: "default" });

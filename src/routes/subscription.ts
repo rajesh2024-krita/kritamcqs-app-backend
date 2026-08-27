@@ -9,6 +9,7 @@ import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { generateInvoiceForSubscription, getInvoiceSettings, regenerateInvoicePdf } from "../lib/invoices";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 import { completePaymentCancelledAutoNotifications, logPaymentCancelledAutoCheckoutStarted, trackPaymentCancelledAutoNotification } from "../services/paymentCancelledAutoNotificationRuntime";
+import { recordAffiliatePurchase } from "../services/affiliateService";
 
 const router: IRouter = Router();
 const RENEWAL_WINDOW_DAYS = 5;
@@ -771,6 +772,11 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
       },
     });
     await completePaymentCancelledAutoNotifications(String(req.userId));
+    await recordAffiliatePurchase({
+      userId: String(req.userId), subscriptionId: String(pendingSubscription._id), planId: String(pendingSubscription.planId),
+      transactionId: body.paymentId, platform: "ANDROID", paymentGateway: "razorpay", amount: Number(pendingSubscription.amount || 0),
+      purchaseAt: pendingSubscription.transactionDate || new Date(),
+    }).catch((error) => req.log.warn({ err: error, subscriptionId: String(pendingSubscription._id) }, "Affiliate conversion recording failed"));
 
     try {
       const invoiceSettings = await getInvoiceSettings();

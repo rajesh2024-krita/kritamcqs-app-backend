@@ -113,3 +113,4 @@ export * from "./models/NationalLeaderboardEntry";
 export * from "./models/NationalCompetitionReward";
 export * from "./models/NationalCompetitionNotification";
 export * from "./models/NationalCompetitionAuditLog";
+export * from "./models/Affiliate";

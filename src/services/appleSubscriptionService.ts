@@ -9,6 +9,7 @@ import {
 import { logger } from "../lib/logger";
 import { generateInvoiceForSubscription } from "../lib/invoices";
 import { APPLE_PRODUCT_ID, type VerifiedAppleReceipt } from "./appleReceiptService";
+import { recordAffiliatePurchase } from "./affiliateService";
 
 export const APPLE_PREMIUM_PLAN = "Premium Plan – 6 Months";
 
@@ -84,6 +85,7 @@ export async function syncUserPremiumEntitlement(userId: string) {
       paymentPlatform: 1,
     },
   });
+  await recordAffiliatePurchase({ userId, subscriptionId: String(purchase._id), planId: String(plan.planId), transactionId: receipt.transactionId, platform: "IOS", paymentGateway: "apple", amount, purchaseAt: receipt.purchaseDate }).catch((error) => logger.warn({ err: error, subscriptionId: String(purchase._id) }, "Affiliate Apple conversion recording failed"));
   logger.info({ userId }, "Premium access revoked after entitlement reconciliation");
   return false;
 }
