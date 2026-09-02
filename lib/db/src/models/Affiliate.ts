@@ -23,15 +23,22 @@ const AffiliateSchema = new Schema<IAffiliate>({
 
 const AffiliateReferralSchema = new Schema({
   affiliateId: { type: Schema.Types.ObjectId, ref: "Affiliate", required: true, index: true }, referralClickId: { type: String, required: true, unique: true, index: true }, affiliateCode: { type: String, required: true, index: true },
-  userId: { type: String, index: true }, referralUrl: String, platform: { type: String, enum: ["WEB", "ANDROID", "IOS"], required: true, index: true }, deviceType: String, browser: String, osName: String, osVersion: String, appVersion: String,
-  clickAt: { type: Date, default: Date.now, index: true }, registrationAt: { type: Date, index: true }, firstAppOpenAt: Date, purchaseAt: Date, subscriptionPlanId: String, purchaseAmount: Number,
-  transactionId: { type: String, index: true }, paymentGateway: String, paymentStatus: String, subscriptionStatus: String, conversionStatus: { type: String, enum: ["CLICKED", "REGISTERED", "CONVERTED", "REFUNDED"], default: "CLICKED", index: true },
+  userId: { type: String, index: true }, campaign: { type: String, trim: true, index: true }, affiliateLinkId: { type: String, trim: true, index: true }, referralUrl: String, platform: { type: String, enum: ["WEB", "ANDROID", "IOS"], required: true, index: true }, deviceType: String, browser: String, osName: String, osVersion: String, appVersion: String,
+  ipAddress: String, userAgent: String, clickStatus: { type: String, enum: ["CLICKED", "DUPLICATE", "EXPIRED"], default: "CLICKED", index: true }, installationStatus: { type: String, enum: ["UNKNOWN", "NEW_INSTALL", "EXISTING_APP_USER"], default: "UNKNOWN", index: true },
+  registrationStatus: { type: String, enum: ["PENDING", "REGISTERED", "EXISTING_USER", "NOT_REGISTERED"], default: "PENDING", index: true }, loginStatus: { type: String, enum: ["PENDING", "LOGGED_IN", "NOT_LOGGED_IN"], default: "PENDING", index: true },
+  purchaseStatus: { type: String, enum: ["PENDING", "PAID", "FAILED", "CANCELLED", "REFUNDED"], default: "PENDING", index: true }, conversionStatus: { type: String, enum: ["PENDING", "SUCCESSFUL", "FAILED", "CANCELLED", "DUPLICATE", "REFUNDED"], default: "PENDING", index: true },
+  userType: { type: String, enum: ["UNKNOWN", "NEW_USER", "EXISTING_USER"], default: "UNKNOWN", index: true }, attributionStatus: { type: String, enum: ["ACTIVE", "ATTRIBUTED", "EXPIRED", "REPLACED"], default: "ACTIVE", index: true },
+  clickAt: { type: Date, default: Date.now, index: true }, expiresAt: { type: Date, index: true }, attributedAt: Date, registrationAt: { type: Date, index: true }, loginAt: Date, firstAppOpenAt: Date, purchaseAt: Date, subscriptionPlanId: String, purchaseAmount: Number,
+  transactionId: { type: String, index: true }, paymentGateway: String, paymentStatus: String, subscriptionStatus: String, commissionRate: Number, commissionAmount: Number,
 }, commonOptions);
+AffiliateReferralSchema.index({ affiliateId: 1, clickAt: -1 });
+AffiliateReferralSchema.index({ userId: 1, attributionStatus: 1, clickAt: -1 });
 
 const AffiliatePurchaseSchema = new Schema({
   affiliateId: { type: Schema.Types.ObjectId, ref: "Affiliate", required: true, index: true }, userId: { type: String, required: true, index: true }, referralId: { type: Schema.Types.ObjectId, ref: "AffiliateReferral", required: true },
   subscriptionId: { type: String, required: true, index: true }, planId: { type: String, required: true, index: true }, platform: { type: String, enum: ["WEB", "ANDROID", "IOS"], required: true, index: true },
-  transactionId: { type: String, required: true, unique: true, index: true }, paymentGateway: String, amount: { type: Number, required: true }, paymentStatus: { type: String, required: true, index: true }, subscriptionStatus: { type: String, required: true, index: true }, purchaseAt: { type: Date, required: true, index: true }, refundedAt: Date,
+  transactionId: { type: String, required: true, unique: true, index: true }, paymentGateway: String, amount: { type: Number, required: true }, paymentStatus: { type: String, required: true, index: true }, subscriptionStatus: { type: String, required: true, index: true },
+  conversionStatus: { type: String, enum: ["PENDING", "SUCCESSFUL", "FAILED", "CANCELLED", "DUPLICATE", "REFUNDED"], default: "SUCCESSFUL", index: true }, commissionRate: Number, commissionAmount: Number, purchaseAt: { type: Date, required: true, index: true }, refundedAt: Date,
 }, commonOptions);
 AffiliatePurchaseSchema.index({ affiliateId: 1, purchaseAt: -1 });
 
@@ -39,7 +46,7 @@ const AffiliateMilestoneSchema = new Schema({ affiliateId: { type: Schema.Types.
 AffiliateMilestoneSchema.index({ affiliateId: 1, milestoneCount: 1 }, { unique: true });
 const AffiliateNotificationSchema = new Schema({ affiliateId: { type: Schema.Types.ObjectId, ref: "Affiliate", required: true, index: true }, notificationType: { type: String, required: true }, title: String, message: String, reportData: Schema.Types.Mixed, emailStatus: String, appNotificationStatus: String, readAt: Date }, commonOptions);
 const AffiliateAuditLogSchema = new Schema({ adminId: { type: String, index: true }, affiliateId: { type: Schema.Types.ObjectId, ref: "Affiliate", index: true }, action: { type: String, required: true, index: true }, oldData: Schema.Types.Mixed, newData: Schema.Types.Mixed }, commonOptions);
-const AffiliateSettingsSchema = new Schema({ key: { type: String, default: "default", unique: true }, attributionWindowDays: { type: Number, default: 30, min: 1, max: 365 }, milestoneCount: { type: Number, default: 10, min: 1 }, repeatMilestone: { type: Boolean, default: true }, emailEnabled: { type: Boolean, default: true }, appNotificationEnabled: { type: Boolean, default: true }, adminEmail: String, referralBaseUrl: { type: String, default: "https://app.kritamcqs.com/affiliate" } }, commonOptions);
+const AffiliateSettingsSchema = new Schema({ key: { type: String, default: "default", unique: true }, attributionWindowDays: { type: Number, default: 30, min: 1, max: 365 }, attributionModel: { type: String, enum: ["FIRST_CLICK", "LAST_CLICK"], default: "LAST_CLICK" }, allowExistingUserAttribution: { type: Boolean, default: true }, commissionRatePercent: { type: Number, default: 20, min: 0, max: 100 }, milestoneCount: { type: Number, default: 10, min: 1 }, repeatMilestone: { type: Boolean, default: true }, emailEnabled: { type: Boolean, default: true }, appNotificationEnabled: { type: Boolean, default: true }, adminEmail: String, referralBaseUrl: { type: String, default: "https://app.kritamcqs.com/affiliate" } }, commonOptions);
 
 export const Affiliate = mongoose.models["Affiliate"] ?? mongoose.model<IAffiliate>("Affiliate", AffiliateSchema);
 export const AffiliateReferral = mongoose.models["AffiliateReferral"] ?? mongoose.model("AffiliateReferral", AffiliateReferralSchema);
