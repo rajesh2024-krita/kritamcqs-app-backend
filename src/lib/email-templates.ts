@@ -4,8 +4,9 @@ import { logger } from "./logger";
 
 export const EMAIL_TEMPLATE_KEYS = {
   SMTP_TEST: "smtp_test",
-  AUTH_REGISTRATION: "auth_registration_email",
-  AUTH_WELCOME: "auth_welcome_email",
+  // These keys are shared with the Admin Panel and must remain identical.
+  AUTH_REGISTRATION: "auth_registration",
+  AUTH_WELCOME: "auth_welcome",
   AUTH_ACCOUNT_VERIFICATION: "auth_account_verification",
   AUTH_FORGOT_PASSWORD_OTP: "auth_forgot_password_otp",
   AUTH_LOGIN_OTP: "auth_login_otp",
