@@ -576,11 +576,7 @@ export async function sendTemplatedEmail(templateKey: string, to: string, variab
   const settings = await InvoiceSettings.findOne({ key: "default" });
   const payload = normalizeEmailVariables(variables);
   const existingTemplate = await EmailTemplate.findOne({ key: templateKey });
-  const template = existingTemplate?.isActive
-    ? existingTemplate
-    : existingTemplate
-    ? null
-    : await resolveTemplate(templateKey);
+  const template = existingTemplate?.isActive ? existingTemplate : null;
   const rendered = template ? renderEmailTemplate(template, payload) : { subject: `Email template disabled: ${templateKey}`, textContent: "", htmlContent: "", variables: payload };
   
   const htmlBody = buildHtmlBody(rendered.htmlContent, rendered.textContent);
