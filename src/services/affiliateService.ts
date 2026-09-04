@@ -1,4 +1,16 @@
-import { AffiliateMilestone, AffiliateNotification, AffiliatePurchase, AffiliateReferral, AffiliateSettings } from "@api/db";
+import crypto from "node:crypto";
+import { Affiliate, AffiliateActivityLog, AffiliateEventTemplate, AffiliateMilestone, AffiliateNotification, AffiliatePurchase, AffiliateReferral, AffiliateSettings } from "@api/db";
+
+const renderEventValue = (source: unknown, values: Record<string, unknown>) => String(source || "").replace(/{{\s*([\w.]+)\s*}}/g, (_match, key) => String(values[key] ?? ""));
+export async function emitAffiliateEvent(event: string, affiliateId: string, values: Record<string, unknown> = {}) {
+  const [template, affiliate, settings] = await Promise.all([AffiliateEventTemplate.findOne({ event }).lean(), Affiliate.findById(affiliateId).lean(), affiliateSettings()]);
+  if (!affiliate) return null;
+  const variables = { affiliate_name: affiliate.affiliateName, affiliate_code: affiliate.affiliateCode, ...values };
+  let notification = null;
+  if (settings.appNotificationEnabled !== false && template?.notificationEnabled !== false && ["AFFILIATE", "BOTH", undefined].includes(template?.recipient)) notification = await AffiliateNotification.create({ affiliateId, notificationType: event, title: renderEventValue(template?.title || event.replaceAll("_", " "), variables), message: renderEventValue(template?.message || `Affiliate event: ${event.replaceAll("_", " ")}`, variables), reportData: values, appNotificationStatus: "SENT", emailStatus: settings.emailEnabled === false || template?.emailEnabled === false ? "DISABLED" : "QUEUED" });
+  await AffiliateActivityLog.create({ activityId: crypto.randomUUID(), userType: "SYSTEM", affiliateId, action: event, module: "EVENT_ENGINE", description: `Central affiliate event processed: ${event}`, metadata: { values, notificationId: notification?._id } });
+  return notification;
+}
 
 export async function affiliateSettings() {
   return AffiliateSettings.findOneAndUpdate({ key: "default" }, { $setOnInsert: { key: "default" } }, { upsert: true, new: true });
@@ -45,7 +57,7 @@ export async function attachReferralToUser(referralClickId: string, userId: stri
   }
 
   const now = new Date();
-  return AffiliateReferral.findOneAndUpdate(
+  const attributed = await AffiliateReferral.findOneAndUpdate(
     { _id: click._id },
     {
       $set: {
@@ -62,6 +74,8 @@ export async function attachReferralToUser(referralClickId: string, userId: stri
     },
     { new: true },
   );
+  if (attributed) await emitAffiliateEvent(mode === "registration" ? "USER_REGISTERED" : "USER_LOGGED_IN", String(attributed.affiliateId), { referral_id: String(attributed._id), user_id: userId });
+  return attributed;
 }
 
 export async function recordAffiliatePurchase(input: { userId: string; subscriptionId: string; planId: string; transactionId: string; platform: "WEB" | "ANDROID" | "IOS"; paymentGateway: string; amount: number; purchaseAt?: Date }) {
@@ -78,6 +92,7 @@ export async function recordAffiliatePurchase(input: { userId: string; subscript
   );
   const doc: any = (purchase as any)?.value || purchase;
   await AffiliateReferral.updateOne({ _id: referral._id }, { $set: { purchaseAt: doc.purchaseAt, subscriptionPlanId: input.planId, purchaseAmount: input.amount, transactionId: input.transactionId, paymentGateway: input.paymentGateway, paymentStatus: "PAID", subscriptionStatus: "ACTIVE", purchaseStatus: "PAID", conversionStatus: "SUCCESSFUL", commissionRate, commissionAmount } });
+  await emitAffiliateEvent("SUBSCRIPTION_PURCHASED", String(referral.affiliateId), { purchase_amount: input.amount, commission_amount: commissionAmount, plan_id: input.planId, transaction_id: input.transactionId });
   await processMilestones(String(referral.affiliateId));
   return doc;
 }

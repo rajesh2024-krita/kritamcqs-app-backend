@@ -2,7 +2,8 @@ import mongoose, { Schema, type Document } from "mongoose";
 
 export interface IAffiliate extends Document {
   firstName: string; lastName?: string; affiliateName: string; email: string; mobile?: string; username: string;
-  passwordHash: string; profileImage?: string; affiliateCode: string; referralLink: string; status: "ACTIVE" | "INACTIVE" | "SUSPENDED";
+  passwordHash: string; profileImage?: string; affiliateCode: string; referralLink: string; status: "ACTIVE" | "INACTIVE" | "SUSPENDED" | "DELETED";
+  accessEnabled?: boolean; tokenVersion?: number; roleId?: mongoose.Types.ObjectId; permissionOverrides?: Record<string, boolean>; referralTarget?: number; commissionRatePercent?: number;
   company?: string; organization?: string; profession?: string; website?: string; socialMediaLinks?: Record<string, string>;
   address?: string; city?: string; state?: string; country?: string; pincode?: string; description?: string;
   accountHolderName?: string; bankName?: string; accountNumber?: string; ifsc?: string; upiId?: string; pan?: string; gst?: string;
@@ -15,7 +16,7 @@ const AffiliateSchema = new Schema<IAffiliate>({
   firstName: { type: String, required: true, trim: true }, lastName: { type: String, trim: true }, affiliateName: { type: String, required: true, trim: true },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true }, mobile: { type: String, trim: true }, username: { type: String, required: true, unique: true, lowercase: true, trim: true },
   passwordHash: { type: String, required: true, select: false }, profileImage: String, affiliateCode: { type: String, required: true, unique: true, uppercase: true, trim: true, match: /^[A-Z0-9_-]{4,24}$/ },
-  referralLink: { type: String, required: true }, status: { type: String, enum: ["ACTIVE", "INACTIVE", "SUSPENDED"], default: "ACTIVE", index: true },
+  referralLink: { type: String, required: true }, status: { type: String, enum: ["ACTIVE", "INACTIVE", "SUSPENDED", "DELETED"], default: "ACTIVE", index: true }, accessEnabled: { type: Boolean, default: true }, tokenVersion: { type: Number, default: 0, select: false }, roleId: { type: Schema.Types.ObjectId, ref: "AffiliateRole" }, permissionOverrides: { type: Map, of: Boolean, default: {} }, referralTarget: Number, commissionRatePercent: Number,
   company: String, organization: String, profession: String, website: String, socialMediaLinks: { type: Schema.Types.Mixed, default: {} }, address: String, city: String, state: String, country: String, pincode: String, description: String,
   accountHolderName: String, bankName: String, accountNumber: { type: String, select: false }, ifsc: String, upiId: String, pan: String, gst: String,
   profileCompletion: { type: Number, default: 0, min: 0, max: 100 }, notes: String, lastLoginAt: Date,
@@ -47,6 +48,8 @@ AffiliateMilestoneSchema.index({ affiliateId: 1, milestoneCount: 1 }, { unique: 
 const AffiliateNotificationSchema = new Schema({ affiliateId: { type: Schema.Types.ObjectId, ref: "Affiliate", required: true, index: true }, notificationType: { type: String, required: true }, title: String, message: String, reportData: Schema.Types.Mixed, emailStatus: String, appNotificationStatus: String, readAt: Date }, commonOptions);
 const AffiliateAuditLogSchema = new Schema({ adminId: { type: String, index: true }, affiliateId: { type: Schema.Types.ObjectId, ref: "Affiliate", index: true }, action: { type: String, required: true, index: true }, oldData: Schema.Types.Mixed, newData: Schema.Types.Mixed }, commonOptions);
 const AffiliateSettingsSchema = new Schema({ key: { type: String, default: "default", unique: true }, attributionWindowDays: { type: Number, default: 30, min: 1, max: 365 }, attributionModel: { type: String, enum: ["FIRST_CLICK", "LAST_CLICK"], default: "LAST_CLICK" }, allowExistingUserAttribution: { type: Boolean, default: true }, commissionRatePercent: { type: Number, default: 20, min: 0, max: 100 }, milestoneCount: { type: Number, default: 10, min: 1 }, repeatMilestone: { type: Boolean, default: true }, emailEnabled: { type: Boolean, default: true }, appNotificationEnabled: { type: Boolean, default: true }, adminEmail: String, referralBaseUrl: { type: String, default: "https://app.kritamcqs.com/affiliate" } }, commonOptions);
+const AffiliateEventTemplateSchema = new Schema({ event: { type: String, required: true, unique: true }, name: String, recipient: String, notificationEnabled: Boolean, emailEnabled: Boolean, title: String, message: String, subject: String, htmlContent: String, textContent: String, variables: [String] }, commonOptions);
+const AffiliateActivityLogSchema = new Schema({ activityId: { type: String, unique: true }, userType: String, userId: String, affiliateId: { type: Schema.Types.ObjectId, ref: "Affiliate", index: true }, action: String, module: String, description: String, ipAddress: String, device: String, browser: String, metadata: Schema.Types.Mixed }, commonOptions);
 
 export const Affiliate = mongoose.models["Affiliate"] ?? mongoose.model<IAffiliate>("Affiliate", AffiliateSchema);
 export const AffiliateReferral = mongoose.models["AffiliateReferral"] ?? mongoose.model("AffiliateReferral", AffiliateReferralSchema);
@@ -55,3 +58,5 @@ export const AffiliateMilestone = mongoose.models["AffiliateMilestone"] ?? mongo
 export const AffiliateNotification = mongoose.models["AffiliateNotification"] ?? mongoose.model("AffiliateNotification", AffiliateNotificationSchema);
 export const AffiliateAuditLog = mongoose.models["AffiliateAuditLog"] ?? mongoose.model("AffiliateAuditLog", AffiliateAuditLogSchema);
 export const AffiliateSettings = mongoose.models["AffiliateSettings"] ?? mongoose.model("AffiliateSettings", AffiliateSettingsSchema);
+export const AffiliateEventTemplate = mongoose.models["AffiliateEventTemplate"] ?? mongoose.model("AffiliateEventTemplate", AffiliateEventTemplateSchema);
+export const AffiliateActivityLog = mongoose.models["AffiliateActivityLog"] ?? mongoose.model("AffiliateActivityLog", AffiliateActivityLogSchema);
