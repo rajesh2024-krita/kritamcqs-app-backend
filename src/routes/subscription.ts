@@ -9,7 +9,7 @@ import { requireAuth, type AuthenticatedRequest } from "../middlewares/auth";
 import { generateInvoiceForSubscription, getInvoiceSettings, regenerateInvoicePdf } from "../lib/invoices";
 import { EMAIL_TEMPLATE_KEYS, sendTemplatedEmail } from "../lib/email-templates";
 import { completePaymentCancelledAutoNotifications, logPaymentCancelledAutoCheckoutStarted, trackPaymentCancelledAutoNotification } from "../services/paymentCancelledAutoNotificationRuntime";
-import { recordAffiliatePurchase } from "../services/affiliateService";
+import { recordAffiliatePurchase, recordAffiliateSubscriptionAttempt } from "../services/affiliateService";
 
 const router: IRouter = Router();
 const RENEWAL_WINDOW_DAYS = 5;
@@ -31,6 +31,20 @@ async function trackFailedPaymentReminder(req: AuthenticatedRequest, pendingSubs
   } catch (error) {
     req.log.warn({ err: error, subscriptionId: String(pendingSubscription?._id || "") }, "Failed to schedule payment reminder");
   }
+}
+
+async function recordAffiliateAttemptForSubscription(req: AuthenticatedRequest, pendingSubscription: any, status: "PENDING" | "FAILED" | "CANCELLED", reason = "") {
+  return recordAffiliateSubscriptionAttempt({
+    userId: String(req.userId),
+    subscriptionId: String(pendingSubscription?._id || ""),
+    planId: String(pendingSubscription?.planId || ""),
+    transactionId: String(pendingSubscription?.razorpayOrderId || pendingSubscription?._id || ""),
+    platform: "ANDROID",
+    paymentGateway: "razorpay",
+    amount: Number(pendingSubscription?.amount || pendingSubscription?.finalAmount || 0),
+    status,
+    reason,
+  }).catch((error) => req.log.warn({ err: error, subscriptionId: String(pendingSubscription?._id || "") }, "Affiliate subscription attempt recording failed"));
 }
 
 function mapPlan(plan: any) {
@@ -554,6 +568,7 @@ router.post("/create-order", requireAuth, async (req: AuthenticatedRequest, res)
       planName: plan.name,
       eventTime: new Date().toISOString(),
     }).catch((error) => req.log.warn({ err: error, orderId: order.id }, "Payment cancelled checkout-start log failed"));
+    await recordAffiliateAttemptForSubscription(req, pendingSubscription, "PENDING");
     req.log.info({ orderId: order.id, userId: req.userId, planId: body.planId, amount: pricing.finalAmount, taxAmount: pricing.taxAmount, discountAmount: pricing.discountAmount }, "Razorpay order created and pending subscription stored");
 
     res.json({
@@ -612,6 +627,7 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
       pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
       await trackFailedPaymentReminder(req, pendingSubscription, "payment_failed", plan.name);
+      await recordAffiliateAttemptForSubscription(req, pendingSubscription, "FAILED", "Razorpay payment signature verification failed");
       throw new Error("Razorpay payment signature verification failed");
     }
 
@@ -635,6 +651,7 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
       pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
       await trackFailedPaymentReminder(req, pendingSubscription, "payment_failed", plan.name);
+      await recordAffiliateAttemptForSubscription(req, pendingSubscription, "FAILED", "Razorpay payment does not belong to this order");
       throw new Error("Razorpay payment does not belong to this order");
     }
 
@@ -645,6 +662,7 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
       pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
       await trackFailedPaymentReminder(req, pendingSubscription, "payment_failed", plan.name);
+      await recordAffiliateAttemptForSubscription(req, pendingSubscription, "FAILED", "Unable to verify Razorpay payment amount");
       throw new Error("Unable to verify Razorpay payment amount");
     }
 
@@ -655,6 +673,7 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
       pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
       await trackFailedPaymentReminder(req, pendingSubscription, "payment_failed", plan.name);
+      await recordAffiliateAttemptForSubscription(req, pendingSubscription, "FAILED", "Razorpay payment amount does not match this order");
       throw new Error(`Razorpay payment amount does not match this order. Paid ${paidAmount}, expected ${expectedAmount}`);
     }
 
@@ -670,6 +689,7 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
       pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
       await trackFailedPaymentReminder(req, pendingSubscription, "payment_failed", plan.name);
+      await recordAffiliateAttemptForSubscription(req, pendingSubscription, "FAILED", `Razorpay payment is not captured. Current status: ${payment.status || "unknown"}`);
       throw new Error(`Razorpay payment is not captured. Current status: ${payment.status || "unknown"}`);
     }
 
@@ -680,6 +700,7 @@ router.post("/verify-payment", requireAuth, async (req: AuthenticatedRequest, re
       pendingSubscription.razorpaySignature = body.signature;
       await pendingSubscription.save();
       await trackFailedPaymentReminder(req, pendingSubscription, "payment_failed", plan.name);
+      await recordAffiliateAttemptForSubscription(req, pendingSubscription, "FAILED", "Razorpay payment amount does not match this order");
       throw new Error(`Razorpay payment amount does not match this order. Paid ${paidAmount}, expected ${expectedAmount}`);
     }
 

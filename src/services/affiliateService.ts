@@ -78,10 +78,71 @@ export async function attachReferralToUser(referralClickId: string, userId: stri
   return attributed;
 }
 
-export async function recordAffiliatePurchase(input: { userId: string; subscriptionId: string; planId: string; transactionId: string; platform: "WEB" | "ANDROID" | "IOS"; paymentGateway: string; amount: number; purchaseAt?: Date }) {
+async function activeAttributedReferral(userId: string) {
   const settings = await affiliateSettings();
   const cutoff = windowCutoff(settings.attributionWindowDays);
-  const referral = await AffiliateReferral.findOne({ userId: input.userId, attributionStatus: "ATTRIBUTED", clickAt: { $gte: cutoff }, conversionStatus: { $in: ["PENDING", "SUCCESSFUL"] } }).sort(settings.attributionModel === "FIRST_CLICK" ? { clickAt: 1 } : { clickAt: -1 });
+  return AffiliateReferral.findOne({ userId, attributionStatus: "ATTRIBUTED", clickAt: { $gte: cutoff }, conversionStatus: { $in: ["PENDING", "SUCCESSFUL"] } }).sort(settings.attributionModel === "FIRST_CLICK" ? { clickAt: 1 } : { clickAt: -1 });
+}
+
+export async function recordAffiliateSubscriptionAttempt(input: { userId: string; subscriptionId?: string; planId?: string; transactionId?: string; platform: "WEB" | "ANDROID" | "IOS"; paymentGateway?: string; amount?: number; status: "PENDING" | "FAILED" | "CANCELLED"; attemptedAt?: Date; reason?: string }) {
+  const referral = await activeAttributedReferral(input.userId);
+  if (!referral) return null;
+
+  const attemptedAt = input.attemptedAt || new Date();
+  const transactionId = String(input.transactionId || input.subscriptionId || `${input.status}:${input.userId}:${input.planId || "subscription"}`);
+  const paymentStatus = input.status;
+  const conversionStatus = input.status === "PENDING" ? "PENDING" : input.status;
+  const subscriptionStatus = input.status === "PENDING" ? "PENDING" : input.status;
+
+  const purchase = await AffiliatePurchase.findOneAndUpdate(
+    { transactionId },
+    {
+      $set: {
+        paymentStatus,
+        subscriptionStatus,
+        conversionStatus,
+        purchaseAt: attemptedAt,
+      },
+      $setOnInsert: {
+        userId: input.userId,
+        affiliateId: referral.affiliateId,
+        referralId: referral._id,
+        subscriptionId: input.subscriptionId || transactionId,
+        planId: input.planId || "",
+        platform: input.platform,
+        transactionId,
+        paymentGateway: input.paymentGateway || "",
+        amount: Number(input.amount || 0),
+        commissionRate: 0,
+        commissionAmount: 0,
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  );
+
+  await AffiliateReferral.updateOne({ _id: referral._id }, { $set: {
+    purchaseAt: attemptedAt,
+    subscriptionPlanId: input.planId || referral.subscriptionPlanId,
+    purchaseAmount: Number(input.amount || referral.purchaseAmount || 0),
+    transactionId,
+    paymentGateway: input.paymentGateway || referral.paymentGateway,
+    paymentStatus,
+    subscriptionStatus,
+    purchaseStatus: paymentStatus,
+    conversionStatus,
+  } });
+
+  await emitAffiliateEvent(
+    input.status === "PENDING" ? "SUBSCRIPTION_PENDING" : input.status === "FAILED" ? "SUBSCRIPTION_FAILED" : "SUBSCRIPTION_CANCELLED",
+    String(referral.affiliateId),
+    { referral_id: String(referral._id), plan_id: input.planId || "", transaction_id: transactionId, reason: input.reason || "" },
+  );
+  return purchase;
+}
+
+export async function recordAffiliatePurchase(input: { userId: string; subscriptionId: string; planId: string; transactionId: string; platform: "WEB" | "ANDROID" | "IOS"; paymentGateway: string; amount: number; purchaseAt?: Date }) {
+  const settings = await affiliateSettings();
+  const referral = await activeAttributedReferral(input.userId);
   if (!referral) return null;
   const commissionRate = Number(settings.commissionRatePercent || 0);
   const commissionAmount = commission(input.amount, commissionRate);
