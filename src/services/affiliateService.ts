@@ -2,12 +2,23 @@ import crypto from "node:crypto";
 import { Affiliate, AffiliateActivityLog, AffiliateEventTemplate, AffiliateMilestone, AffiliateNotification, AffiliatePurchase, AffiliateReferral, AffiliateSettings } from "@api/db";
 
 const renderEventValue = (source: unknown, values: Record<string, unknown>) => String(source || "").replace(/{{\s*([\w.]+)\s*}}/g, (_match, key) => String(values[key] ?? ""));
+const AFFILIATE_VISIBLE_EVENTS = new Set(["SUBSCRIPTION_PURCHASED", "PAYMENT_SENT", "ADMIN_MESSAGE"]);
+const DEFAULT_AFFILIATE_MESSAGES: Record<string, { title: string; message: string }> = {
+  SUBSCRIPTION_PURCHASED: {
+    title: "Subscription completed",
+    message: "Congratulations! A user referred through your affiliate link has successfully completed a subscription, and your commission has been updated.",
+  },
+  PAYMENT_SENT: {
+    title: "Commission payment sent",
+    message: "Your affiliate commission payment has been sent.",
+  },
+};
 export async function emitAffiliateEvent(event: string, affiliateId: string, values: Record<string, unknown> = {}) {
   const [template, affiliate, settings] = await Promise.all([AffiliateEventTemplate.findOne({ event }).lean(), Affiliate.findById(affiliateId).lean(), affiliateSettings()]);
   if (!affiliate) return null;
   const variables = { affiliate_name: affiliate.affiliateName, affiliate_code: affiliate.affiliateCode, ...values };
   let notification = null;
-  if (settings.appNotificationEnabled !== false && template?.notificationEnabled !== false && ["AFFILIATE", "BOTH", undefined].includes(template?.recipient)) notification = await AffiliateNotification.create({ affiliateId, notificationType: event, title: renderEventValue(template?.title || event.replaceAll("_", " "), variables), message: renderEventValue(template?.message || `Affiliate event: ${event.replaceAll("_", " ")}`, variables), reportData: values, appNotificationStatus: "SENT", emailStatus: settings.emailEnabled === false || template?.emailEnabled === false ? "DISABLED" : "QUEUED" });
+  if (AFFILIATE_VISIBLE_EVENTS.has(event) && settings.appNotificationEnabled !== false && template?.notificationEnabled !== false && ["AFFILIATE", "BOTH", undefined].includes(template?.recipient)) notification = await AffiliateNotification.create({ affiliateId, notificationType: event, title: renderEventValue(template?.title || DEFAULT_AFFILIATE_MESSAGES[event]?.title || event.replaceAll("_", " "), variables), message: renderEventValue(template?.message || DEFAULT_AFFILIATE_MESSAGES[event]?.message || `Affiliate event: ${event.replaceAll("_", " ")}`, variables), reportData: values, appNotificationStatus: "SENT", emailStatus: settings.emailEnabled === false || template?.emailEnabled === false ? "DISABLED" : "QUEUED" });
   await AffiliateActivityLog.create({ activityId: crypto.randomUUID(), userType: "SYSTEM", affiliateId, action: event, module: "EVENT_ENGINE", description: `Central affiliate event processed: ${event}`, metadata: { values, notificationId: notification?._id } });
   return notification;
 }
@@ -81,7 +92,7 @@ export async function attachReferralToUser(referralClickId: string, userId: stri
 async function activeAttributedReferral(userId: string) {
   const settings = await affiliateSettings();
   const cutoff = windowCutoff(settings.attributionWindowDays);
-  return AffiliateReferral.findOne({ userId, attributionStatus: "ATTRIBUTED", clickAt: { $gte: cutoff }, conversionStatus: { $in: ["PENDING", "SUCCESSFUL"] } }).sort(settings.attributionModel === "FIRST_CLICK" ? { clickAt: 1 } : { clickAt: -1 });
+  return AffiliateReferral.findOne({ userId, attributionStatus: "ATTRIBUTED", clickAt: { $gte: cutoff }, conversionStatus: { $in: ["PENDING", "SUCCESSFUL", "FAILED", "CANCELLED"] } }).sort(settings.attributionModel === "FIRST_CLICK" ? { clickAt: 1 } : { clickAt: -1 });
 }
 
 export async function recordAffiliateSubscriptionAttempt(input: { userId: string; subscriptionId?: string; planId?: string; transactionId?: string; platform: "WEB" | "ANDROID" | "IOS"; paymentGateway?: string; amount?: number; status: "PENDING" | "FAILED" | "CANCELLED"; attemptedAt?: Date; reason?: string }) {
@@ -144,7 +155,8 @@ export async function recordAffiliatePurchase(input: { userId: string; subscript
   const settings = await affiliateSettings();
   const referral = await activeAttributedReferral(input.userId);
   if (!referral) return null;
-  const commissionRate = Number(settings.commissionRatePercent || 0);
+  const affiliate = await Affiliate.findById(referral.affiliateId).lean();
+  const commissionRate = Number(affiliate?.commissionRatePercent ?? settings.commissionRatePercent ?? 0);
   const commissionAmount = commission(input.amount, commissionRate);
   const purchase = await AffiliatePurchase.findOneAndUpdate(
     { transactionId: input.transactionId },

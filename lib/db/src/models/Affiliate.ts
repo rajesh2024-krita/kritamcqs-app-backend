@@ -2,7 +2,7 @@ import mongoose, { Schema, type Document } from "mongoose";
 
 export interface IAffiliate extends Document {
   firstName: string; lastName?: string; affiliateName: string; email: string; mobile?: string; username: string;
-  passwordHash: string; profileImage?: string; affiliateCode: string; referralLink: string; status: "ACTIVE" | "INACTIVE" | "SUSPENDED" | "DELETED";
+  passwordHash: string; profileImage?: string; affiliateCode: string; referralLink: string; referralCodeStatus?: "ACTIVE" | "INACTIVE"; referralCodeActivatedAt?: Date; referralCodeExpiresAt?: Date; status: "ACTIVE" | "INACTIVE" | "SUSPENDED" | "DELETED";
   accessEnabled?: boolean; tokenVersion?: number; roleId?: mongoose.Types.ObjectId; permissionOverrides?: Record<string, boolean>; referralTarget?: number; commissionRatePercent?: number;
   company?: string; organization?: string; profession?: string; website?: string; socialMediaLinks?: Record<string, string>;
   address?: string; city?: string; state?: string; country?: string; pincode?: string; description?: string;
@@ -16,7 +16,7 @@ const AffiliateSchema = new Schema<IAffiliate>({
   firstName: { type: String, required: true, trim: true }, lastName: { type: String, trim: true }, affiliateName: { type: String, required: true, trim: true },
   email: { type: String, required: true, unique: true, lowercase: true, trim: true }, mobile: { type: String, trim: true }, username: { type: String, required: true, unique: true, lowercase: true, trim: true },
   passwordHash: { type: String, required: true, select: false }, profileImage: String, affiliateCode: { type: String, required: true, unique: true, uppercase: true, trim: true, match: /^[A-Z0-9_-]{4,24}$/ },
-  referralLink: { type: String, required: true }, status: { type: String, enum: ["ACTIVE", "INACTIVE", "SUSPENDED", "DELETED"], default: "ACTIVE", index: true }, accessEnabled: { type: Boolean, default: true }, tokenVersion: { type: Number, default: 0, select: false }, roleId: { type: Schema.Types.ObjectId, ref: "AffiliateRole" }, permissionOverrides: { type: Map, of: Boolean, default: {} }, referralTarget: Number, commissionRatePercent: Number,
+  referralLink: { type: String, required: true }, referralCodeStatus: { type: String, enum: ["ACTIVE", "INACTIVE"], default: "ACTIVE", index: true }, referralCodeActivatedAt: { type: Date, default: Date.now }, referralCodeExpiresAt: Date, status: { type: String, enum: ["ACTIVE", "INACTIVE", "SUSPENDED", "DELETED"], default: "ACTIVE", index: true }, accessEnabled: { type: Boolean, default: true }, tokenVersion: { type: Number, default: 0, select: false }, roleId: { type: Schema.Types.ObjectId, ref: "AffiliateRole" }, permissionOverrides: { type: Map, of: Boolean, default: {} }, referralTarget: Number, commissionRatePercent: Number,
   company: String, organization: String, profession: String, website: String, socialMediaLinks: { type: Schema.Types.Mixed, default: {} }, address: String, city: String, state: String, country: String, pincode: String, description: String,
   accountHolderName: String, bankName: String, accountNumber: { type: String, select: false }, ifsc: String, upiId: String, pan: String, gst: String,
   profileCompletion: { type: Number, default: 0, min: 0, max: 100 }, notes: String, lastLoginAt: Date,
